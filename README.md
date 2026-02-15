@@ -27,33 +27,31 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 - Native engine: C++ (Win32 API, NTFS USN/MFT)
 - Installer: WiX/MSI via Tauri bundle
 
-## Repository Structure
+## 📂 Repository Structure
 
 ```text
 omni-search/
-|- src/                          # React UI
-|  |- App.tsx
-|  |- App.css
-|  `- main.tsx
-|- public/
-|  `- app-icon.png               # Frontend favicon
-|- src-tauri/
-|  |- cpp/
-|  |  `- scanner.cpp             # Native NTFS scanner + search engine
-|  |- src/
-|  |  |- lib.rs                  # Tauri commands + FFI bindings
-|  |  `- main.rs
-|  |- build.rs                   # Compiles C++ and embeds Windows manifest
-|  |- windows-app-manifest.xml   # requireAdministrator for volume access
-|  |- tauri.conf.json            # App/bundle config
-|  `- icons/
-|- docs/
-|  `- images/
-|     |- omnisearch-architecture.svg
-|     `- README.md
-|- index.html
-|- package.json
-`- README.md
+├── src/                         # ⚛️ React & TypeScript UI
+│   ├── App.tsx                  # Main Search Interface
+│   ├── App.css                  # Custom Styling
+│   └── main.tsx                 # Frontend Entry Point
+├── public/                      # Static Assets
+│   └── app-icon.png             # Frontend Favicon
+├── src-tauri/                   # 🦀 Tauri (Rust) Backend
+│   ├── cpp/                     # ⚙️ C++ High-Speed Engine
+│   │   └── scanner.cpp          # Native NTFS Scanner (MFT Access)
+│   ├── src/                     # Rust Source Code
+│   │   ├── lib.rs               # FFI Bindings & Tauri Commands
+│   │   └── main.rs              # App Entry & Lifecycle
+│   ├── build.rs                 # C++ Compilation Script
+│   ├── windows-app-manifest.xml # 🛡️ Admin Privileges (For Volume Access)
+│   ├── tauri.conf.json          # Application Configuration
+│   └── icons/                   # System App Icons
+├── docs/                        # 📖 Documentation
+│   └── images/                  # Architecture & Screenshots
+├── index.html                   # HTML Entry Point
+├── package.json                 # Node.js Dependencies
+└── README.md                    # Project Documentation
 ```
 
 ## How It Works
@@ -133,12 +131,6 @@ Update visible app metadata in `src-tauri/tauri.conf.json`:
 - App still shows old icon:
   - Regenerate icons, run `cargo clean`, rebuild, and restart Explorer (Windows icon cache).
 
-## Open-Source Publishing Checklist
-
-- Add a `LICENSE` file (MIT/Apache-2.0 recommended for broad reuse).
-- Add `docs/images/omnisearch-ui.png` screenshot.
-- Verify `.gitignore` excludes generated artifacts (`node_modules`, `dist`, `src-tauri/target`).
-- Tag a release after first stable MSI build.
 
 ## Contributing
 
