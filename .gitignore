@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Frontend build outputs
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# Rust / Tauri build outputs
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/*.pdb
+*.pdb
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Local environment files
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor and OS files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

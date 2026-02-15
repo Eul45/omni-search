@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">OmniSearch Architecture</title>
+  <desc id="desc">Flow from React frontend to Rust bridge to C++ scanner and NTFS MFT/USN.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#081225"/>
+      <stop offset="100%" stop-color="#0b1c3a"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f274a"/>
+      <stop offset="100%" stop-color="#12345f"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="8" refX="11" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#57d7a1" />
+    </marker>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#bg)" />
+  <text x="640" y="68" fill="#f0f6ff" font-size="44" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="700">OmniSearch Architecture</text>
+  <text x="640" y="106" fill="#9bb7dd" font-size="22" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">React UI -> Rust Tauri Commands -> C++ NTFS Engine -> MFT/USN</text>
+
+  <rect x="90" y="190" width="260" height="250" rx="22" fill="url(#panel)" stroke="#3f6aa1" stroke-width="2" />
+  <text x="220" y="245" fill="#ecf4ff" font-size="30" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Frontend</text>
+  <text x="220" y="285" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">React + TypeScript</text>
+  <text x="220" y="322" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">Spotlight UI</text>
+  <text x="220" y="359" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">Filters + Results</text>
+
+  <rect x="430" y="190" width="260" height="250" rx="22" fill="url(#panel)" stroke="#3f6aa1" stroke-width="2" />
+  <text x="560" y="245" fill="#ecf4ff" font-size="30" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Bridge</text>
+  <text x="560" y="285" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">Rust + Tauri</text>
+  <text x="560" y="322" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">FFI Bindings</text>
+  <text x="560" y="359" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">JSON Commands</text>
+
+  <rect x="770" y="190" width="260" height="250" rx="22" fill="url(#panel)" stroke="#3f6aa1" stroke-width="2" />
+  <text x="900" y="245" fill="#ecf4ff" font-size="30" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Engine</text>
+  <text x="900" y="285" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">C++17/20</text>
+  <text x="900" y="322" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">DeviceIoControl</text>
+  <text x="900" y="359" fill="#9ec0e9" font-size="21" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">USN + MFT Scan</text>
+
+  <rect x="1060" y="235" width="170" height="160" rx="22" fill="#0f3058" stroke="#3f6aa1" stroke-width="2" />
+  <text x="1145" y="290" fill="#ecf4ff" font-size="25" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="700">NTFS</text>
+  <text x="1145" y="326" fill="#9ec0e9" font-size="19" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">MFT + USN</text>
+  <text x="1145" y="358" fill="#9ec0e9" font-size="19" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">Volume Data</text>
+
+  <line x1="350" y1="315" x2="430" y2="315" stroke="#57d7a1" stroke-width="4" marker-end="url(#arrow)" />
+  <line x1="690" y1="315" x2="770" y2="315" stroke="#57d7a1" stroke-width="4" marker-end="url(#arrow)" />
+  <line x1="1030" y1="315" x2="1060" y2="315" stroke="#57d7a1" stroke-width="4" marker-end="url(#arrow)" />
+
+  <text x="640" y="505" fill="#b9d0ee" font-size="23" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">Requires Administrator privileges for raw NTFS volume access.</text>
+  <text x="640" y="540" fill="#8fb8e1" font-size="19" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">Built with Tauri v2, Rust FFI, and a native C++ scanner.</text>
+</svg>
