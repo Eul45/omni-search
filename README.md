@@ -146,4 +146,3 @@ Update visible app metadata in `src-tauri/tauri.conf.json`:
 2. Create a feature branch.
 3. Run checks (`cargo check`, `npm run build`).
 4. Open a PR with test notes and benchmark notes if scanner logic changed.
-"# omni-search" 
