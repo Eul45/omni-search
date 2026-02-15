@@ -3,10 +3,12 @@
 High-performance Windows desktop file search built with Tauri v2, Rust, and C++.
 OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global search with advanced filters.
 
-![OmniSearch Logo](src-tauri/icons/icon.png)
+<p align="center">
+  <img src="docs/images/screen.png" width="600" alt="Smart Commit Screenshot">
+</p>
+
 ![OmniSearch Architecture](docs/images/omnisearch-architecture.svg)
 
-> Optional: add a UI screenshot as `docs/images/omnisearch-ui.png` and reference it in this README for a live app preview.
 
 ## Features
 
