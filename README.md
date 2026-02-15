@@ -47,7 +47,7 @@ omni-search/
 │   ├── windows-app-manifest.xml # 🛡️ Admin Privileges (For Volume Access)
 │   ├── tauri.conf.json          # Application Configuration
 │   └── icons/                   # System App Icons
-├── docs/                        # 📖 Documentation
+├── docs/                        # Documentation
 │   └── images/                  # Architecture & Screenshots
 ├── index.html                   # HTML Entry Point
 ├── package.json                 # Node.js Dependencies
