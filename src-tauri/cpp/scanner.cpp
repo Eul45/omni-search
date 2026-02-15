@@ -51,6 +51,15 @@ struct SearchRow {
   int64_t modified_unix;
 };
 
+struct DriveInfo {
+  std::wstring letter;
+  std::wstring path;
+  std::wstring filesystem;
+  std::wstring drive_type;
+  bool is_ntfs;
+  bool can_open_volume;
+};
+
 std::shared_mutex g_index_mutex;
 std::vector<IndexedFile> g_indexed_files;
 std::atomic<bool> g_is_indexing{false};
@@ -117,6 +126,38 @@ std::wstring NormalizeDriveLetter(const char* drive_utf8) {
     candidate = L'C';
   }
   return std::wstring(1, candidate);
+}
+
+std::wstring DriveTypeToText(const UINT drive_type) {
+  switch (drive_type) {
+    case DRIVE_FIXED:
+      return L"fixed";
+    case DRIVE_REMOVABLE:
+      return L"removable";
+    case DRIVE_REMOTE:
+      return L"network";
+    case DRIVE_CDROM:
+      return L"cdrom";
+    case DRIVE_RAMDISK:
+      return L"ramdisk";
+    case DRIVE_NO_ROOT_DIR:
+      return L"no-root";
+    default:
+      return L"unknown";
+  }
+}
+
+bool CanOpenVolume(const std::wstring& drive_letter) {
+  const std::wstring volume_path = L"\\\\.\\" + drive_letter + L":";
+  HANDLE volume = CreateFileW(
+      volume_path.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (volume == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  CloseHandle(volume);
+  return true;
 }
 
 std::wstring ExtractExtensionLower(const std::wstring& file_name) {
@@ -244,6 +285,32 @@ std::string SearchRowsToJson(const std::vector<SearchRow>& rows) {
     json.append(std::to_string(rows[i].created_unix));
     json.append(",\"modifiedUnix\":");
     json.append(std::to_string(rows[i].modified_unix));
+    json.push_back('}');
+  }
+  json.push_back(']');
+  return json;
+}
+
+std::string DriveRowsToJson(const std::vector<DriveInfo>& rows) {
+  std::string json;
+  json.reserve(rows.size() * 120);
+  json.push_back('[');
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (i > 0) {
+      json.push_back(',');
+    }
+    json.append("{\"letter\":\"");
+    AppendEscapedJsonString(&json, WideToUtf8(rows[i].letter));
+    json.append("\",\"path\":\"");
+    AppendEscapedJsonString(&json, WideToUtf8(rows[i].path));
+    json.append("\",\"filesystem\":\"");
+    AppendEscapedJsonString(&json, WideToUtf8(rows[i].filesystem));
+    json.append("\",\"driveType\":\"");
+    AppendEscapedJsonString(&json, WideToUtf8(rows[i].drive_type));
+    json.append("\",\"isNtfs\":");
+    json.append(rows[i].is_ntfs ? "true" : "false");
+    json.append(",\"canOpenVolume\":");
+    json.append(rows[i].can_open_volume ? "true" : "false");
     json.push_back('}');
   }
   json.push_back(']');
@@ -507,6 +574,50 @@ bool scan_mft_internal(const std::wstring& drive_letter, std::vector<IndexedFile
   return true;
 }
 
+std::vector<DriveInfo> list_drives_internal() {
+  std::vector<DriveInfo> rows;
+  DWORD required = GetLogicalDriveStringsW(0, nullptr);
+  if (required == 0) {
+    return rows;
+  }
+
+  std::vector<wchar_t> raw(static_cast<size_t>(required) + 1, L'\0');
+  DWORD written = GetLogicalDriveStringsW(required, raw.data());
+  if (written == 0) {
+    return rows;
+  }
+
+  const wchar_t* cursor = raw.data();
+  while (*cursor != L'\0') {
+    std::wstring root = cursor;
+    cursor += root.size() + 1;
+    if (root.size() < 2) {
+      continue;
+    }
+
+    const wchar_t letter = static_cast<wchar_t>(std::towupper(root[0]));
+    if (letter < L'A' || letter > L'Z') {
+      continue;
+    }
+
+    const std::wstring drive_letter(1, letter);
+    const UINT drive_type = GetDriveTypeW(root.c_str());
+    wchar_t filesystem_buffer[MAX_PATH] = L"";
+    const BOOL has_fs = GetVolumeInformationW(
+        root.c_str(), nullptr, 0, nullptr, nullptr, nullptr, filesystem_buffer,
+        MAX_PATH);
+    const std::wstring filesystem = has_fs ? filesystem_buffer : L"";
+    const bool is_ntfs = ToLower(filesystem) == L"ntfs";
+    const bool can_open_volume = is_ntfs ? CanOpenVolume(drive_letter) : false;
+
+    rows.push_back(DriveInfo{drive_letter, root, filesystem,
+                             DriveTypeToText(drive_type), is_ntfs,
+                             can_open_volume});
+  }
+
+  return rows;
+}
+
 }  // namespace
 
 extern "C" __declspec(dllexport) bool omni_start_indexing(const char* drive_utf8) {
@@ -563,6 +674,16 @@ extern "C" __declspec(dllexport) const char* omni_last_error() {
   thread_local std::string error_cache;
   error_cache = ReadLastErrorText();
   return error_cache.c_str();
+}
+
+extern "C" __declspec(dllexport) char* omni_list_drives_json() {
+  const std::vector<DriveInfo> rows = list_drives_internal();
+  const std::string json = DriveRowsToJson(rows);
+  char* out = HeapCopyString(json);
+  if (out == nullptr) {
+    SetLastErrorText("Failed to allocate drives result buffer.");
+  }
+  return out;
 }
 
 extern "C" __declspec(dllexport) char* omni_search_files_json(

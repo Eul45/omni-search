@@ -3,7 +3,7 @@
   <assemblyIdentity
     type="win32"
     name="com.eyuel-engida.omni-search"
-    version="0.1.0.0"
+    version="0.1.1.0"
     processorArchitecture="*"
   />
   <dependency>

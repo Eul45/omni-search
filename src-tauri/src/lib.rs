@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +23,17 @@ struct SearchResult {
     modified_unix: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveInfo {
+    letter: String,
+    path: String,
+    filesystem: String,
+    drive_type: String,
+    is_ntfs: bool,
+    can_open_volume: bool,
+}
+
 #[cfg(target_os = "windows")]
 unsafe extern "C" {
     fn omni_start_indexing(drive_utf8: *const c_char) -> bool;
@@ -38,6 +50,7 @@ unsafe extern "C" {
         max_created_unix: i64,
         limit: u32,
     ) -> *mut c_char;
+    fn omni_list_drives_json() -> *mut c_char;
     fn omni_free_string(ptr: *mut c_char);
 }
 
@@ -172,6 +185,98 @@ fn search_files(
     }
 }
 
+#[tauri::command]
+fn list_drives() -> Result<Vec<DriveInfo>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: No parameters, returns allocated C string or null.
+        let raw_json = unsafe { omni_list_drives_json() };
+        if raw_json.is_null() {
+            return Err(read_last_error().unwrap_or_else(|| "Failed to enumerate drives".to_string()));
+        }
+
+        // SAFETY: `raw_json` points to a C string allocated by C++.
+        let json = unsafe { CStr::from_ptr(raw_json).to_string_lossy().to_string() };
+        // SAFETY: `raw_json` was allocated by C++ and must be released by C++.
+        unsafe { omni_free_string(raw_json) };
+
+        let parsed: Vec<DriveInfo> =
+            serde_json::from_str(&json).map_err(|err| format!("Invalid drives payload: {err}"))?;
+        Ok(parsed)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("OmniSearch scanner is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::PathBuf;
+
+        let target = PathBuf::from(path);
+        if !target.exists() {
+            return Err("File does not exist on disk.".to_string());
+        }
+
+        let target_path = target.to_string_lossy().into_owned();
+        app.opener()
+            .open_path(target_path, None::<&str>)
+            .map_err(|err| format!("Failed to open file: {err}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, path);
+        Err("File open is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+fn reveal_in_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::PathBuf;
+
+        let target = PathBuf::from(path);
+        if !target.exists() {
+            return Err("File does not exist on disk.".to_string());
+        }
+
+        app.opener()
+            .reveal_item_in_dir(&target)
+            .map_err(|err| format!("Failed to reveal file in folder: {err}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, path);
+        Err("Folder reveal is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|err| format!("Failed to open link: {err}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, url);
+        Err("Opening external links is only supported on Windows.".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -179,7 +284,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_indexing,
             index_status,
-            search_files
+            search_files,
+            list_drives,
+            open_file,
+            reveal_in_folder,
+            open_external_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
