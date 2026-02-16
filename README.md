@@ -35,7 +35,7 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 
 ```text
 omni-search/
-├── src/                         # ⚛️ React & TypeScript UI
+├── src/                         # React & TypeScript UI
 │   ├── App.tsx                  # Main Search Interface
 │   ├── App.css                  # Custom Styling
 │   └── main.tsx                 # Frontend Entry Point
