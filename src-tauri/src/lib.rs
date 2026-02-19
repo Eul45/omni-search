@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use tauri_plugin_opener::OpenerExt;
+use base64::Engine;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +278,69 @@ fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn load_preview_data_url(path: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::fs;
+        use std::path::PathBuf;
+
+        let file_path = PathBuf::from(path);
+        if !file_path.exists() {
+            return Err("Preview target does not exist.".to_string());
+        }
+        if !file_path.is_file() {
+            return Err("Preview target is not a file.".to_string());
+        }
+
+        let extension = file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        let mime = match extension.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            "ico" => "image/x-icon",
+            "pdf" => "application/pdf",
+            "mp4" => "video/mp4",
+            "webm" => "video/webm",
+            "mov" => "video/quicktime",
+            "m4v" => "video/x-m4v",
+            "avi" => "video/x-msvideo",
+            "mkv" => "video/x-matroska",
+            "wmv" => "video/x-ms-wmv",
+            _ => return Err("Preview not supported for this file type.".to_string()),
+        };
+
+        let metadata = fs::metadata(&file_path).map_err(|err| format!("Preview metadata read failed: {err}"))?;
+        let max_preview_bytes = match mime {
+            "application/pdf" => 8 * 1024 * 1024_u64,
+            "video/mp4" | "video/webm" | "video/quicktime" | "video/x-m4v" | "video/x-msvideo"
+            | "video/x-matroska" | "video/x-ms-wmv" => 20 * 1024 * 1024_u64,
+            _ => 12 * 1024 * 1024_u64,
+        };
+
+        if metadata.len() > max_preview_bytes {
+            return Err(format!("Preview skipped: file too large ({} bytes).", metadata.len()));
+        }
+
+        let bytes = fs::read(&file_path).map_err(|err| format!("Preview read failed: {err}"))?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        Ok(format!("data:{mime};base64,{encoded}"))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("Preview loading is only supported on Windows.".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -288,7 +352,8 @@ pub fn run() {
             list_drives,
             open_file,
             reveal_in_folder,
-            open_external_url
+            open_external_url,
+            load_preview_data_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
