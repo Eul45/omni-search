@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 const POLL_INTERVAL_MS = 700;
 const SEARCH_DEBOUNCE_MS = 130;
 const SEARCH_LIMIT = 200;
-const PREVIEW_PREFETCH_LIMIT = 40;
 
 type IndexStatus = {
   indexing: boolean;
@@ -41,93 +39,7 @@ type SocialLink = {
   icon: SocialIconName;
 };
 
-type ActiveTab = "search" | "about";
-type ResultViewTab = "all" | "apps" | "media" | "docs" | "archives";
-type ResultSortMode = "relevance" | "newest" | "largest" | "name";
-type ThemeMode = "dark" | "light";
-type PreviewKind = "image" | "video" | "pdf" | "none";
-
 const DEVELOPER_NAME = "Eyuel Engida";
-const THEME_STORAGE_KEY = "omnisearch_theme_mode";
-const PREVIEW_STORAGE_KEY = "omnisearch_show_previews";
-const RESULT_VIEW_TABS: Array<{ id: ResultViewTab; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "apps", label: "Apps" },
-  { id: "media", label: "Media" },
-  { id: "docs", label: "Docs" },
-  { id: "archives", label: "Archives" },
-];
-
-const APP_EXTENSIONS = new Set([
-  "exe",
-  "msi",
-  "bat",
-  "cmd",
-  "com",
-  "ps1",
-  "lnk",
-  "appx",
-]);
-
-const MEDIA_EXTENSIONS = new Set([
-  "mp3",
-  "wav",
-  "flac",
-  "aac",
-  "ogg",
-  "m4a",
-  "mp4",
-  "mkv",
-  "avi",
-  "mov",
-  "wmv",
-  "webm",
-  "jpg",
-  "jpeg",
-  "png",
-  "gif",
-  "bmp",
-  "webp",
-]);
-
-const DOC_EXTENSIONS = new Set([
-  "pdf",
-  "doc",
-  "docx",
-  "ppt",
-  "pptx",
-  "xls",
-  "xlsx",
-  "txt",
-  "md",
-  "rtf",
-  "csv",
-  "json",
-  "xml",
-  "html",
-  "css",
-  "js",
-  "ts",
-  "tsx",
-  "rs",
-  "cpp",
-  "h",
-  "py",
-  "java",
-]);
-
-const ARCHIVE_EXTENSIONS = new Set(["zip", "rar", "7z", "tar", "gz", "iso"]);
-const IMAGE_PREVIEW_EXTENSIONS = new Set([
-  "jpg",
-  "jpeg",
-  "png",
-  "gif",
-  "bmp",
-  "webp",
-  "ico",
-]);
-const VIDEO_PREVIEW_EXTENSIONS = new Set(["mp4", "mkv", "avi", "mov", "wmv", "webm", "m4v"]);
-
 const SOCIAL_LINKS: SocialLink[] = [
   { label: "GitHub", url: "https://github.com/Eul45", icon: "github" },
   {
@@ -221,177 +133,7 @@ function formatUnix(unixSeconds: number): string {
   return date.toLocaleDateString();
 }
 
-function categoryFromExtension(extension: string): ResultViewTab {
-  const ext = extension.trim().toLowerCase();
-  if (!ext) {
-    return "all";
-  }
-  if (APP_EXTENSIONS.has(ext)) {
-    return "apps";
-  }
-  if (MEDIA_EXTENSIONS.has(ext)) {
-    return "media";
-  }
-  if (DOC_EXTENSIONS.has(ext)) {
-    return "docs";
-  }
-  if (ARCHIVE_EXTENSIONS.has(ext)) {
-    return "archives";
-  }
-  return "all";
-}
-
-function rowKeyForResult(result: SearchResult): string {
-  return `${result.path}:${result.modifiedUnix}`;
-}
-
-function normalizedExtension(result: SearchResult): string {
-  const ext = result.extension.trim().replace(/^\./, "").toLowerCase();
-  if (ext) {
-    return ext;
-  }
-  const dotIndex = result.name.lastIndexOf(".");
-  if (dotIndex < 0 || dotIndex === result.name.length - 1) {
-    return "";
-  }
-  return result.name.slice(dotIndex + 1).trim().toLowerCase();
-}
-
-function previewKindFromResult(result: SearchResult): PreviewKind {
-  const ext = normalizedExtension(result);
-  if (!ext) {
-    return "none";
-  }
-  if (IMAGE_PREVIEW_EXTENSIONS.has(ext)) {
-    return "image";
-  }
-  if (VIDEO_PREVIEW_EXTENSIONS.has(ext)) {
-    return "video";
-  }
-  if (ext === "pdf") {
-    return "pdf";
-  }
-  return "none";
-}
-
-function previewSrcFromPath(path: string): string {
-  try {
-    return convertFileSrc(path, "asset");
-  } catch {
-    return "";
-  }
-}
-
-function fileUrlFromPath(path: string): string {
-  try {
-    const normalizedPath = path.replace(/\\/g, "/");
-    if (/^[A-Za-z]:\//.test(normalizedPath)) {
-      const drive = normalizedPath.slice(0, 2);
-      const rest = normalizedPath
-        .slice(3)
-        .split("/")
-        .map((part) => encodeURIComponent(part))
-        .join("/");
-      return `file:///${drive}/${rest}`;
-    }
-    if (normalizedPath.startsWith("//")) {
-      const uncPath = normalizedPath
-        .split("/")
-        .filter((part) => part.length > 0)
-        .map((part) => encodeURIComponent(part))
-        .join("/");
-      return `file:///${uncPath}`;
-    }
-    return "";
-  } catch {
-    return "";
-  }
-}
-
-function previewSourcesFromPath(path: string): string[] {
-  const candidates = [previewSrcFromPath(path), fileUrlFromPath(path)].filter(
-    (value) => value.length > 0,
-  );
-  return [...new Set(candidates)];
-}
-
-function relevanceScore(result: SearchResult, queryValue: string): number {
-  const query = queryValue.trim().toLowerCase();
-  if (!query) {
-    return 0;
-  }
-
-  const name = result.name.toLowerCase();
-  const path = result.path.toLowerCase();
-
-  if (name.startsWith(query)) {
-    return 10_000 - name.length;
-  }
-
-  const nameIndex = name.indexOf(query);
-  if (nameIndex >= 0) {
-    return 7_000 - nameIndex;
-  }
-
-  const pathIndex = path.indexOf(query);
-  if (pathIndex >= 0) {
-    return 4_000 - pathIndex;
-  }
-
-  return 0;
-}
-
-function highlightMatch(text: string, queryValue: string): ReactNode {
-  const query = queryValue.trim();
-  if (!query) {
-    return text;
-  }
-
-  const lowerText = text.toLowerCase();
-  const lowerQuery = query.toLowerCase();
-  if (!lowerText.includes(lowerQuery)) {
-    return text;
-  }
-
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-  let key = 0;
-
-  while (cursor < text.length) {
-    const nextIndex = lowerText.indexOf(lowerQuery, cursor);
-    if (nextIndex === -1) {
-      nodes.push(<span key={`t-${key}`}>{text.slice(cursor)}</span>);
-      break;
-    }
-
-    if (nextIndex > cursor) {
-      nodes.push(<span key={`t-${key}`}>{text.slice(cursor, nextIndex)}</span>);
-      key += 1;
-    }
-
-    nodes.push(
-      <mark className="match-highlight" key={`m-${key}`}>
-        {text.slice(nextIndex, nextIndex + query.length)}
-      </mark>,
-    );
-    key += 1;
-    cursor = nextIndex + query.length;
-  }
-
-  return <>{nodes}</>;
-}
-
 function App() {
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-    if (typeof window === "undefined") {
-      return "dark";
-    }
-    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved === "light" || saved === "dark") {
-      return saved;
-    }
-    return "dark";
-  });
   const [status, setStatus] = useState<IndexStatus>({
     indexing: false,
     ready: false,
@@ -411,25 +153,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<ActiveTab>("search");
-  const [resultView, setResultView] = useState<ResultViewTab>("all");
-  const [resultSort, setResultSort] = useState<ResultSortMode>("relevance");
-  const [showPreviews, setShowPreviews] = useState<boolean>(() => {
-    if (typeof window === "undefined") {
-      return true;
-    }
-    const saved = window.localStorage.getItem(PREVIEW_STORAGE_KEY);
-    if (saved === "0") {
-      return false;
-    }
-    if (saved === "1") {
-      return true;
-    }
-    return true;
-  });
-  const [previewSourceState, setPreviewSourceState] = useState<Record<string, number>>({});
-  const [previewReadyState, setPreviewReadyState] = useState<Record<string, true>>({});
-  const [previewDataUrls, setPreviewDataUrls] = useState<Record<string, string>>({});
 
   const hasFilters =
     extension.trim().length > 0 ||
@@ -439,130 +162,6 @@ function App() {
     createdBefore.length > 0;
 
   const selectedDriveInfo = drives.find((drive) => drive.letter === selectedDrive);
-  const trimmedQuery = query.trim();
-
-  const resultCounts = useMemo<Record<ResultViewTab, number>>(() => {
-    const counts: Record<ResultViewTab, number> = {
-      all: results.length,
-      apps: 0,
-      media: 0,
-      docs: 0,
-      archives: 0,
-    };
-
-    for (const result of results) {
-      const category = categoryFromExtension(result.extension);
-      if (category !== "all") {
-        counts[category] += 1;
-      }
-    }
-
-    return counts;
-  }, [results]);
-
-  const visibleResults = useMemo(() => {
-    const filtered = results.filter((result) => {
-      if (resultView === "all") {
-        return true;
-      }
-      return categoryFromExtension(result.extension) === resultView;
-    });
-
-    const sorted = [...filtered];
-    sorted.sort((left, right) => {
-      if (resultSort === "newest") {
-        return right.modifiedUnix - left.modifiedUnix;
-      }
-      if (resultSort === "largest") {
-        return right.size - left.size;
-      }
-      if (resultSort === "name") {
-        return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
-      }
-
-      const rankDiff = relevanceScore(right, trimmedQuery) - relevanceScore(left, trimmedQuery);
-      if (rankDiff !== 0) {
-        return rankDiff;
-      }
-      if (right.modifiedUnix !== left.modifiedUnix) {
-        return right.modifiedUnix - left.modifiedUnix;
-      }
-      return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
-    });
-
-    return sorted;
-  }, [results, resultView, resultSort, trimmedQuery]);
-
-  const visibleTotalBytes = useMemo(
-    () => visibleResults.reduce((sum, result) => sum + result.size, 0),
-    [visibleResults],
-  );
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", themeMode);
-    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
-  }, [themeMode]);
-
-  useEffect(() => {
-    window.localStorage.setItem(PREVIEW_STORAGE_KEY, showPreviews ? "1" : "0");
-  }, [showPreviews]);
-
-  useEffect(() => {
-    setPreviewSourceState({});
-    setPreviewReadyState({});
-    setPreviewDataUrls({});
-  }, [results, showPreviews]);
-
-  useEffect(() => {
-    if (!showPreviews || visibleResults.length === 0) {
-      return;
-    }
-
-    const candidates = visibleResults
-      .slice(0, PREVIEW_PREFETCH_LIMIT)
-      .filter((result) => previewKindFromResult(result) !== "none");
-    if (candidates.length === 0) {
-      return;
-    }
-
-    const missing = candidates.filter((result) => !previewDataUrls[rowKeyForResult(result)]);
-    if (missing.length === 0) {
-      return;
-    }
-
-    let cancelled = false;
-    const load = async () => {
-      for (const result of missing) {
-        if (cancelled) {
-          return;
-        }
-        try {
-          const dataUrl = await invoke<string>("load_preview_data_url", { path: result.path });
-          if (cancelled || !dataUrl || !dataUrl.startsWith("data:")) {
-            continue;
-          }
-          const rowKey = rowKeyForResult(result);
-          setPreviewDataUrls((previous) => {
-            if (previous[rowKey]) {
-              return previous;
-            }
-            return {
-              ...previous,
-              [rowKey]: dataUrl,
-            };
-          });
-        } catch {
-          // Ignore per-file preview generation failures; UI will fallback gracefully.
-        }
-      }
-    };
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [showPreviews, visibleResults, previewDataUrls]);
 
   useEffect(() => {
     let active = true;
@@ -645,6 +244,7 @@ function App() {
   }, [selectedDrive]);
 
   useEffect(() => {
+    const trimmedQuery = query.trim();
     if (!trimmedQuery && !hasFilters) {
       setResults([]);
       setSearchError(null);
@@ -695,7 +295,7 @@ function App() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [trimmedQuery, extension, minSizeMb, maxSizeMb, createdAfter, createdBefore, hasFilters]);
+  }, [query, extension, minSizeMb, maxSizeMb, createdAfter, createdBefore, hasFilters]);
 
   async function reindex(): Promise<void> {
     if (!selectedDrive) {
@@ -710,14 +310,6 @@ function App() {
         lastError: String(error),
       }));
     }
-  }
-
-  function clearSearchFilters(): void {
-    setExtension("");
-    setMinSizeMb("");
-    setMaxSizeMb("");
-    setCreatedAfter("");
-    setCreatedBefore("");
   }
 
   async function revealResult(path: string): Promise<void> {
@@ -747,42 +339,6 @@ function App() {
     }
   }
 
-  function toggleThemeMode(): void {
-    setThemeMode((previous) => (previous === "dark" ? "light" : "dark"));
-  }
-
-  function handlePreviewError(rowKey: string, sourceCount: number): void {
-    setPreviewSourceState((previous) => {
-      const currentIndex = previous[rowKey] ?? 0;
-      if (currentIndex < 0) {
-        return previous;
-      }
-      const nextIndex = currentIndex + 1;
-      if (nextIndex < sourceCount) {
-        return {
-          ...previous,
-          [rowKey]: nextIndex,
-        };
-      }
-      return {
-        ...previous,
-        [rowKey]: -1,
-      };
-    });
-  }
-
-  function handlePreviewReady(previewKey: string): void {
-    setPreviewReadyState((previous) => {
-      if (previous[previewKey]) {
-        return previous;
-      }
-      return {
-        ...previous,
-        [previewKey]: true,
-      };
-    });
-  }
-
   const statusText = status.indexing
     ? `Indexing ${status.indexedCount.toLocaleString()} files...`
     : status.ready
@@ -795,16 +351,6 @@ function App() {
         <header className="panel-header">
           <h1>OmniSearch</h1>
           <div className="header-tools">
-            <button
-              type="button"
-              className="theme-toggle"
-              onClick={toggleThemeMode}
-              aria-label={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              title={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            >
-              <span className="theme-toggle-dot" aria-hidden="true" />
-              <span>{themeMode === "dark" ? "Light mode" : "Dark mode"}</span>
-            </button>
             <label className="drive-picker" htmlFor="drive-picker">
               <span>Drive</span>
               <select
@@ -833,345 +379,170 @@ function App() {
           </div>
         </header>
 
-        <nav className="tab-row" aria-label="Main sections">
-          <button
-            type="button"
-            className={`tab ${activeTab === "search" ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveTab("search");
-            }}
-          >
-            Search
-          </button>
-          <button
-            type="button"
-            className={`tab ${activeTab === "about" ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveTab("about");
-            }}
-          >
-            About
-          </button>
-        </nav>
+        <div className="status-row">
+          <span
+            className={`status-dot ${status.indexing ? "live" : status.ready ? "ready" : "idle"}`}
+          />
+          <span>{statusText}</span>
+        </div>
 
-        {activeTab === "search" ? (
-          <section className="tab-panel" aria-label="Search files">
-            <div className="status-row">
-              <span
-                className={`status-dot ${status.indexing ? "live" : status.ready ? "ready" : "idle"}`}
-              />
-              <span>{statusText}</span>
-            </div>
-
-            {status.lastError ? <p className="error-row">{status.lastError}</p> : null}
-            {driveError ? <p className="error-row">{driveError}</p> : null}
-            {selectedDriveInfo && !selectedDriveInfo.canOpenVolume ? (
-              <p className="error-row">
-                The selected drive cannot be indexed without administrator privileges.
-              </p>
-            ) : null}
-
-            <input
-              className="search-input"
-              type="text"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="Type to search across indexed files..."
-              autoFocus
-            />
-
-            <section className="filter-grid">
-              <label>
-                Extension
-                <input
-                  type="text"
-                  value={extension}
-                  onChange={(event) => setExtension(event.currentTarget.value)}
-                  placeholder=".mp4"
-                />
-              </label>
-              <label>
-                Min size (MB)
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={minSizeMb}
-                  onChange={(event) => setMinSizeMb(event.currentTarget.value)}
-                  placeholder="0"
-                />
-              </label>
-              <label>
-                Max size (MB)
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={maxSizeMb}
-                  onChange={(event) => setMaxSizeMb(event.currentTarget.value)}
-                  placeholder="2048"
-                />
-              </label>
-              <label>
-                Created after
-                <input
-                  type="date"
-                  value={createdAfter}
-                  onChange={(event) => setCreatedAfter(event.currentTarget.value)}
-                />
-              </label>
-              <label>
-                Created before
-                <input
-                  type="date"
-                  value={createdBefore}
-                  onChange={(event) => setCreatedBefore(event.currentTarget.value)}
-                />
-              </label>
-            </section>
-
-            <section className="results-panel">
-              <div className="results-toolbar">
-                <div className="results-scope-tabs" aria-label="Result categories">
-                  {RESULT_VIEW_TABS.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`scope-tab ${resultView === item.id ? "is-active" : ""}`}
-                      onClick={() => {
-                        setResultView(item.id);
-                      }}
-                    >
-                      <span>{item.label}</span>
-                      <small>{resultCounts[item.id].toLocaleString()}</small>
-                    </button>
-                  ))}
-                </div>
-
-                <div className="results-toolbar-actions">
-                  <div className="results-inline-stats" aria-live="polite">
-                    <span>
-                      {`${visibleResults.length.toLocaleString()} shown`}
-                      {visibleResults.length !== results.length
-                        ? ` / ${results.length.toLocaleString()}`
-                        : ""}
-                    </span>
-                    <span>{formatBytes(visibleTotalBytes)}</span>
-                  </div>
-                  <label className="preview-toggle" htmlFor="preview-toggle">
-                    <input
-                      id="preview-toggle"
-                      type="checkbox"
-                      checked={showPreviews}
-                      onChange={(event) => {
-                        setShowPreviews(event.currentTarget.checked);
-                      }}
-                    />
-                    <span>Show previews</span>
-                  </label>
-                  <label className="sort-picker" htmlFor="result-sort">
-                    <span>Sort</span>
-                    <select
-                      id="result-sort"
-                      value={resultSort}
-                      onChange={(event) => {
-                        setResultSort(event.currentTarget.value as ResultSortMode);
-                      }}
-                    >
-                      <option value="relevance">Best match</option>
-                      <option value="newest">Newest</option>
-                      <option value="largest">Largest</option>
-                      <option value="name">Name A-Z</option>
-                    </select>
-                  </label>
-                  {hasFilters ? (
-                    <button type="button" className="clear-filters" onClick={clearSearchFilters}>
-                      Clear filters
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-
-              {loading ? <p className="hint compact-hint">Searching...</p> : null}
-              {searchError ? <p className="error-row">{searchError}</p> : null}
-              {actionError ? <p className="error-row">{actionError}</p> : null}
-              {!loading && !searchError && visibleResults.length === 0 && (trimmedQuery || hasFilters) ? (
-                <p className="hint compact-hint">No files match the current filters.</p>
-              ) : null}
-
-              <ul className="results-list">
-                {visibleResults.map((result) => {
-                  const rowKey = rowKeyForResult(result);
-                  const normalizedExt = normalizedExtension(result);
-                  const shortType = (normalizedExt || "file").slice(0, 2).toUpperCase();
-                  const extensionLabel = normalizedExt ? `.${normalizedExt}` : "file";
-                  const previewKind = showPreviews ? previewKindFromResult(result) : "none";
-                  const previewSources =
-                    previewKind !== "none"
-                      ? [
-                          ...(previewDataUrls[rowKey] ? [previewDataUrls[rowKey]] : []),
-                          ...previewSourcesFromPath(result.path),
-                        ].filter((source, index, all) => source.length > 0 && all.indexOf(source) === index)
-                      : [];
-                  const activePreviewIndex = previewSourceState[rowKey] ?? 0;
-                  const previewFailed = activePreviewIndex < 0;
-                  const previewRenderKey = `${rowKey}:${activePreviewIndex}:${previewKind}`;
-                  const previewReady = Boolean(previewReadyState[previewRenderKey]);
-                  const previewSrc =
-                    !previewFailed && previewKind !== "none"
-                      ? (previewSources[activePreviewIndex] ?? "")
-                      : "";
-                  const hasRenderablePreview = previewSrc.length > 0;
-
-                  return (
-                    <li
-                      key={rowKey}
-                      className="result-row clickable"
-                      role="button"
-                      tabIndex={0}
-                      title="Click to reveal in folder, double-click to open"
-                      onClick={() => {
-                        void revealResult(result.path);
-                      }}
-                      onDoubleClick={() => {
-                        void openResult(result.path);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void openResult(result.path);
-                        } else if (event.key === " ") {
-                          event.preventDefault();
-                          void revealResult(result.path);
-                        }
-                      }}
-                    >
-                      {showPreviews ? (
-                        <div className={`result-preview ${previewKind}`} aria-hidden="true">
-                          <span className="preview-fallback">{shortType}</span>
-                          {hasRenderablePreview && previewKind === "image" ? (
-                            <img
-                              key={`${rowKey}:${activePreviewIndex}:image`}
-                              className={`preview-media ${previewReady ? "ready" : ""}`}
-                              src={previewSrc}
-                              alt=""
-                              loading="lazy"
-                              onLoad={() => {
-                                handlePreviewReady(previewRenderKey);
-                              }}
-                              onError={() => {
-                                handlePreviewError(rowKey, previewSources.length);
-                              }}
-                            />
-                          ) : null}
-                          {hasRenderablePreview && previewKind === "video" ? (
-                            <video
-                              key={`${rowKey}:${activePreviewIndex}:video`}
-                              className={`preview-media ${previewReady ? "ready" : ""}`}
-                              src={previewSrc}
-                              muted
-                              playsInline
-                              preload="metadata"
-                              onLoadedData={() => {
-                                handlePreviewReady(previewRenderKey);
-                              }}
-                              onError={() => {
-                                handlePreviewError(rowKey, previewSources.length);
-                              }}
-                            />
-                          ) : null}
-                          {hasRenderablePreview && previewKind === "pdf" ? (
-                            <iframe
-                              key={`${rowKey}:${activePreviewIndex}:pdf`}
-                              className={`preview-media ${previewReady ? "ready" : ""}`}
-                              src={`${previewSrc}#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`}
-                              title=""
-                              loading="lazy"
-                              onLoad={() => {
-                                handlePreviewReady(previewRenderKey);
-                              }}
-                              onError={() => {
-                                handlePreviewError(rowKey, previewSources.length);
-                              }}
-                            />
-                          ) : null}
-                        </div>
-                      ) : (
-                        <div className="result-icon">{shortType}</div>
-                      )}
-
-                      <div className="result-main">
-                        <strong>{highlightMatch(result.name, trimmedQuery)}</strong>
-                        <span>{highlightMatch(result.path, trimmedQuery)}</span>
-                      </div>
-                      <div className="result-meta">
-                        <span className="meta-chip">{extensionLabel}</span>
-                        <span className="meta-chip">{formatBytes(result.size)}</span>
-                        <span className="meta-chip">{formatUnix(result.createdUnix)}</span>
-                      </div>
-                      <div className="result-actions">
-                        <button
-                          type="button"
-                          className="row-action"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void openResult(result.path);
-                          }}
-                        >
-                          Open
-                        </button>
-                        <button
-                          type="button"
-                          className="row-action"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void revealResult(result.path);
-                          }}
-                        >
-                          Folder
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          </section>
+        {status.lastError ? <p className="error-row">{status.lastError}</p> : null}
+        {driveError ? <p className="error-row">{driveError}</p> : null}
+        {selectedDriveInfo && !selectedDriveInfo.canOpenVolume ? (
+          <p className="error-row">
+            The selected drive cannot be indexed without administrator privileges.
+          </p>
         ) : null}
 
-        {activeTab === "about" ? (
-          <section className="tab-panel" aria-label="About OmniSearch and developer">
-            <div className="about-panel">
-              <div className="about-header">
-                <div>
-                  <h2>About OmniSearch</h2>
-                  <p className="about-tagline">
-                    Fast local search across your drives with rich filters.
-                  </p>
+        <input
+          className="search-input"
+          type="text"
+          value={query}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          placeholder="Type to search across indexed files..."
+          autoFocus
+        />
+
+        <section className="filter-grid">
+          <label>
+            Extension
+            <input
+              type="text"
+              value={extension}
+              onChange={(event) => setExtension(event.currentTarget.value)}
+              placeholder=".mp4"
+            />
+          </label>
+          <label>
+            Min size (MB)
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={minSizeMb}
+              onChange={(event) => setMinSizeMb(event.currentTarget.value)}
+              placeholder="0"
+            />
+          </label>
+          <label>
+            Max size (MB)
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={maxSizeMb}
+              onChange={(event) => setMaxSizeMb(event.currentTarget.value)}
+              placeholder="2048"
+            />
+          </label>
+          <label>
+            Created after
+            <input
+              type="date"
+              value={createdAfter}
+              onChange={(event) => setCreatedAfter(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            Created before
+            <input
+              type="date"
+              value={createdBefore}
+              onChange={(event) => setCreatedBefore(event.currentTarget.value)}
+            />
+          </label>
+        </section>
+
+        <section className="results-panel">
+          {loading ? <p className="hint">Searching...</p> : null}
+          {searchError ? <p className="error-row">{searchError}</p> : null}
+          {actionError ? <p className="error-row">{actionError}</p> : null}
+          {!loading && !searchError && results.length === 0 && (query.trim() || hasFilters) ? (
+            <p className="hint">No files match the current filters.</p>
+          ) : null}
+          {!loading && !searchError && results.length > 0 ? (
+            <p className="hint">Click a result to show it in folder. Double-click to open it.</p>
+          ) : null}
+
+          <ul>
+            {results.map((result) => (
+              <li
+                key={`${result.path}:${result.modifiedUnix}`}
+                className="result-row clickable"
+                role="button"
+                tabIndex={0}
+                title="Click to reveal in folder, double-click to open"
+                onClick={() => {
+                  void revealResult(result.path);
+                }}
+                onDoubleClick={() => {
+                  void openResult(result.path);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void openResult(result.path);
+                  } else if (event.key === " ") {
+                    event.preventDefault();
+                    void revealResult(result.path);
+                  }
+                }}
+              >
+                <div className="result-main">
+                  <strong>{result.name}</strong>
+                  <span>{result.path}</span>
                 </div>
-                <div className="about-developer">
-                  <span className="about-label">Built by</span>
-                  <span className="about-name">{DEVELOPER_NAME}</span>
+                <div className="result-meta">
+                  <span>{result.extension ? `.${result.extension}` : "-"}</span>
+                  <span>{formatBytes(result.size)}</span>
+                  <span>{formatUnix(result.createdUnix)}</span>
                 </div>
-              </div>
-              <div className="social-links">
-                {SOCIAL_LINKS.map((item) => (
+                <div className="result-actions">
                   <button
-                    key={item.url}
                     type="button"
-                    className="social-link"
-                    onClick={() => {
-                      void openExternalLink(item.url);
+                    className="row-action"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void openResult(result.path);
                     }}
                   >
-                    <SocialIcon icon={item.icon} />
-                    <span>{item.label}</span>
+                    Open
                   </button>
-                ))}
-              </div>
-            </div>
-          </section>
-        ) : null}
+                  <button
+                    type="button"
+                    className="row-action"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void revealResult(result.path);
+                    }}
+                  >
+                    Folder
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="about-panel" aria-label="Developer info">
+          <h2>Developer</h2>
+          <p>{DEVELOPER_NAME}</p>
+          <div className="social-links">
+            {SOCIAL_LINKS.map((item) => (
+              <button
+                key={item.url}
+                type="button"
+                className="social-link"
+                onClick={() => {
+                  void openExternalLink(item.url);
+                }}
+              >
+                <SocialIcon icon={item.icon} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </section>
       </main>
     </div>
   );

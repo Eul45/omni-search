@@ -100,7 +100,7 @@ npx tauri build -b msi
 
 Output path:
 
-- `src-tauri/target/release/bundle/msi/omni-search_<version>_x64_en-US.msi`
+- `src-tauri/target/release/bundle/msi/omni-search_0.1.0_x64_en-US.msi`
 
 Build EXE installer (NSIS):
 
@@ -111,42 +111,6 @@ npx tauri build -b nsis
 Output path:
 
 - `src-tauri/target/release/bundle/nsis/`
-
-## Automated MSI Releases (GitHub Actions)
-
-This repo includes `.github/workflows/release-msi.yml` so MSI packages can be built by GitHub Actions and published in GitHub Releases.
-
-Release flow:
-
-1. Update versions in:
-   - `package.json`
-   - `src-tauri/tauri.conf.json`
-   - `src-tauri/Cargo.toml`
-2. Commit and push.
-3. Create and push a version tag that matches your app version:
-
-```powershell
-git tag v0.1.2
-git push origin v0.1.2
-```
-
-4. GitHub Actions will:
-   - build the Windows MSI
-   - attach the MSI to the GitHub Release
-   - attach `SHA256SUMS.txt`
-   - generate build provenance attestation (public repos)
-
-Verify checksum after download:
-
-```powershell
-Get-FileHash .\omni-search_0.1.2_x64_en-US.msi -Algorithm SHA256
-```
-
-Verify provenance attestation:
-
-```powershell
-gh attestation verify .\omni-search_0.1.2_x64_en-US.msi -R <owner>/<repo>
-```
 
 ## Customize App Icon / Branding
 
@@ -178,4 +142,12 @@ Update visible app metadata in `src-tauri/tauri.conf.json`:
 2. Create a feature branch.
 3. Run checks (`cargo check`, `npm run build`).
 4. Open a PR with test notes and benchmark notes if scanner logic changed.
-"# omini-search" 
+## Star History
+
+<a href="https://www.star-history.com/#Eul45/omni-search&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Eul45/omni-search&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Eul45/omni-search&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Eul45/omni-search&type=date&legend=top-left" />
+ </picture>
+</a>
