@@ -116,6 +116,57 @@ std::wstring ToLower(std::wstring value) {
   return value;
 }
 
+std::string DescribeWin32Error(const DWORD error_code) {
+  LPSTR message_buffer = nullptr;
+  const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                      FORMAT_MESSAGE_IGNORE_INSERTS;
+  const DWORD message_len =
+      FormatMessageA(flags, nullptr, error_code, 0,
+                     reinterpret_cast<LPSTR>(&message_buffer), 0, nullptr);
+  std::string message;
+  if (message_len > 0 && message_buffer != nullptr) {
+    message.assign(message_buffer, message_len);
+    while (!message.empty() &&
+           (message.back() == '\r' || message.back() == '\n' || message.back() == ' ')) {
+      message.pop_back();
+    }
+  }
+  if (message_buffer != nullptr) {
+    LocalFree(message_buffer);
+  }
+
+  char code_buffer[16];
+  std::snprintf(code_buffer, sizeof(code_buffer), "0x%08lX",
+                static_cast<unsigned long>(error_code));
+  if (message.empty()) {
+    return std::string(code_buffer);
+  }
+  return std::string(code_buffer) + " " + message;
+}
+
+std::string BuildWin32ErrorText(const std::string& context, const DWORD error_code) {
+  std::string out = context;
+  out.append(" (");
+  out.append(DescribeWin32Error(error_code));
+  out.append(")");
+  return out;
+}
+
+bool IsUsnJournalMissingError(const DWORD error_code) {
+  return error_code == ERROR_JOURNAL_NOT_ACTIVE ||
+         error_code == ERROR_JOURNAL_DELETE_IN_PROGRESS ||
+         error_code == ERROR_FILE_NOT_FOUND;
+}
+
+bool IsPathMissingError(const DWORD error_code) {
+  return error_code == ERROR_FILE_NOT_FOUND ||
+         error_code == ERROR_PATH_NOT_FOUND ||
+         error_code == ERROR_INVALID_NAME ||
+         error_code == ERROR_BAD_NETPATH ||
+         error_code == ERROR_BAD_NET_NAME ||
+         error_code == ERROR_NOT_READY;
+}
+
 std::wstring NormalizeDriveLetter(const char* drive_utf8) {
   std::wstring drive = Utf8ToWide(drive_utf8 == nullptr ? "C" : drive_utf8);
   if (drive.empty()) {
@@ -466,8 +517,9 @@ bool scan_mft_internal(const std::wstring& drive_letter, std::vector<IndexedFile
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
       FILE_ATTRIBUTE_NORMAL, nullptr);
   if (volume == INVALID_HANDLE_VALUE) {
-    *out_error =
-        "Unable to open volume. Run as administrator and ensure the target drive is NTFS.";
+    *out_error = BuildWin32ErrorText(
+        "Unable to open volume. Run as administrator and ensure the target drive is NTFS.",
+        GetLastError());
     return false;
   }
 
@@ -479,17 +531,33 @@ bool scan_mft_internal(const std::wstring& drive_letter, std::vector<IndexedFile
 
   DWORD bytes = 0;
   USN_JOURNAL_DATA_V0 journal{};
-  if (!DeviceIoControl(volume, FSCTL_QUERY_USN_JOURNAL, nullptr, 0, &journal,
-                       sizeof(journal), &bytes, nullptr)) {
-    CloseHandle(volume);
-    *out_error = "Failed to query USN journal. The drive must be NTFS.";
-    return false;
+  bool has_journal = DeviceIoControl(volume, FSCTL_QUERY_USN_JOURNAL, nullptr, 0,
+                                     &journal, sizeof(journal), &bytes, nullptr) !=
+                     FALSE;
+  if (!has_journal) {
+    const DWORD query_error = GetLastError();
+    if (!IsUsnJournalMissingError(query_error)) {
+      CloseHandle(volume);
+      *out_error = BuildWin32ErrorText("Failed to query USN journal.", query_error);
+      return false;
+    }
+
+    CREATE_USN_JOURNAL_DATA create_data{};
+    create_data.MaximumSize = 32ULL * 1024ULL * 1024ULL;
+    create_data.AllocationDelta = 8ULL * 1024ULL * 1024ULL;
+    DWORD create_bytes = 0;
+    DeviceIoControl(volume, FSCTL_CREATE_USN_JOURNAL, &create_data,
+                    sizeof(create_data), nullptr, 0, &create_bytes, nullptr);
+
+    has_journal = DeviceIoControl(volume, FSCTL_QUERY_USN_JOURNAL, nullptr, 0,
+                                  &journal, sizeof(journal), &bytes, nullptr) != FALSE;
   }
 
   MFT_ENUM_DATA_V0 enum_data{};
   enum_data.StartFileReferenceNumber = 0;
   enum_data.LowUsn = 0;
-  enum_data.HighUsn = journal.NextUsn;
+  enum_data.HighUsn =
+      has_journal ? journal.NextUsn : std::numeric_limits<USN>::max();
 
   constexpr DWORD kBufferSize = 4 * 1024 * 1024;
   std::vector<BYTE> buffer(kBufferSize);
@@ -509,7 +577,8 @@ bool scan_mft_internal(const std::wstring& drive_letter, std::vector<IndexedFile
         break;
       }
       CloseHandle(volume);
-      *out_error = "MFT enumeration failed during DeviceIoControl call.";
+      *out_error = BuildWin32ErrorText(
+          "MFT enumeration failed during DeviceIoControl call.", error);
       return false;
     }
 
@@ -721,6 +790,10 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
       int64_t modified = 0;
       bool metadata_loaded =
           ReadFileMetadata(file.path, &size, &created, &modified);
+      if (!metadata_loaded && IsPathMissingError(GetLastError())) {
+        // Skip stale entries for files that were deleted or moved.
+        continue;
+      }
 
       if (requires_metadata) {
         if (!metadata_loaded) {
