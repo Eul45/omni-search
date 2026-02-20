@@ -26,6 +26,37 @@ struct SearchResult {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct DuplicateFile {
+    name: String,
+    path: String,
+    size: u64,
+    created_unix: i64,
+    modified_unix: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DuplicateGroup {
+    group_id: String,
+    size: u64,
+    total_bytes: u64,
+    file_count: u32,
+    files: Vec<DuplicateFile>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DuplicateScanStatus {
+    running: bool,
+    cancel_requested: bool,
+    scanned_files: u64,
+    total_files: u64,
+    groups_found: u64,
+    progress_percent: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DriveInfo {
     letter: String,
     path: String,
@@ -51,6 +82,13 @@ unsafe extern "C" {
         max_created_unix: i64,
         limit: u32,
     ) -> *mut c_char;
+    fn omni_find_duplicates_json(
+        min_size: u64,
+        max_groups: u32,
+        max_files_per_group: u32,
+    ) -> *mut c_char;
+    fn omni_cancel_duplicate_scan() -> bool;
+    fn omni_duplicate_scan_status_json() -> *mut c_char;
     fn omni_list_drives_json() -> *mut c_char;
     fn omni_free_string(ptr: *mut c_char);
 }
@@ -182,6 +220,90 @@ fn search_files(
             max_created_unix,
             limit,
         );
+        Err("OmniSearch scanner is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+async fn find_duplicate_groups(
+    min_size: Option<u64>,
+    max_groups: Option<u32>,
+    max_files_per_group: Option<u32>,
+) -> Result<Vec<DuplicateGroup>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let min_size = min_size.unwrap_or(50 * 1024 * 1024);
+        let max_groups = max_groups.unwrap_or(200).clamp(1, 1_000);
+        let max_files_per_group = max_files_per_group.unwrap_or(80).clamp(2, 400);
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<DuplicateGroup>, String> {
+            // SAFETY: Inputs are plain integers and function returns an allocated C string or null.
+            let raw_json =
+                unsafe { omni_find_duplicates_json(min_size, max_groups, max_files_per_group) };
+            if raw_json.is_null() {
+                return Err(
+                    read_last_error().unwrap_or_else(|| "Failed to find duplicate files.".to_string())
+                );
+            }
+
+            // SAFETY: `raw_json` points to a C string allocated by C++.
+            let json = unsafe { CStr::from_ptr(raw_json).to_string_lossy().to_string() };
+            // SAFETY: `raw_json` was allocated by C++ and must be released by C++.
+            unsafe { omni_free_string(raw_json) };
+
+            let parsed: Vec<DuplicateGroup> = serde_json::from_str(&json)
+                .map_err(|err| format!("Invalid duplicate payload: {err}"))?;
+            Ok(parsed)
+        })
+        .await
+        .map_err(|err| format!("Duplicate scan task failed: {err}"))?
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (min_size, max_groups, max_files_per_group);
+        Err("OmniSearch scanner is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+fn duplicate_scan_status() -> Result<DuplicateScanStatus, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: No inputs, returns an allocated C string or null.
+        let raw_json = unsafe { omni_duplicate_scan_status_json() };
+        if raw_json.is_null() {
+            return Err(
+                read_last_error().unwrap_or_else(|| "Failed to read duplicate scan status.".to_string())
+            );
+        }
+
+        // SAFETY: `raw_json` points to a C string allocated by C++.
+        let json = unsafe { CStr::from_ptr(raw_json).to_string_lossy().to_string() };
+        // SAFETY: `raw_json` was allocated by C++ and must be released by C++.
+        unsafe { omni_free_string(raw_json) };
+
+        let parsed: DuplicateScanStatus = serde_json::from_str(&json)
+            .map_err(|err| format!("Invalid duplicate status payload: {err}"))?;
+        Ok(parsed)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("OmniSearch scanner is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+fn cancel_duplicate_scan() -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: FFI call only flips an atomic flag.
+        let requested = unsafe { omni_cancel_duplicate_scan() };
+        Ok(requested)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         Err("OmniSearch scanner is only supported on Windows.".to_string())
     }
 }
@@ -349,6 +471,9 @@ pub fn run() {
             start_indexing,
             index_status,
             search_files,
+            find_duplicate_groups,
+            duplicate_scan_status,
+            cancel_duplicate_scan,
             list_drives,
             open_file,
             reveal_in_folder,

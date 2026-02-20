@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -28,6 +29,7 @@ struct RawUsnEntry {
   uint64_t parent_frn;
   std::wstring name;
   bool is_directory;
+  uint32_t reason;
 };
 
 struct NodeEntry {
@@ -37,9 +39,20 @@ struct NodeEntry {
 };
 
 struct IndexedFile {
+  uint64_t frn;
   std::wstring name;
   std::wstring path;
   std::wstring extension_lower;
+};
+
+struct ScanSnapshot {
+  std::vector<IndexedFile> files;
+  std::unordered_map<uint64_t, NodeEntry> nodes;
+  uint64_t root_frn = 0;
+  std::wstring root_path;
+  uint64_t journal_id = 0;
+  int64_t journal_next_usn = 0;
+  bool live_updates_supported = false;
 };
 
 struct SearchRow {
@@ -49,6 +62,22 @@ struct SearchRow {
   uint64_t size;
   int64_t created_unix;
   int64_t modified_unix;
+};
+
+struct DuplicateFileRow {
+  std::wstring name;
+  std::wstring path;
+  uint64_t size;
+  int64_t created_unix;
+  int64_t modified_unix;
+};
+
+struct DuplicateGroupRow {
+  std::string group_id;
+  uint64_t size;
+  uint64_t total_bytes;
+  uint32_t file_count;
+  std::vector<DuplicateFileRow> files;
 };
 
 struct DriveInfo {
@@ -62,9 +91,19 @@ struct DriveInfo {
 
 std::shared_mutex g_index_mutex;
 std::vector<IndexedFile> g_indexed_files;
+std::unordered_map<uint64_t, size_t> g_file_position_by_frn;
+std::unordered_map<uint64_t, NodeEntry> g_nodes;
+uint64_t g_root_frn = 0;
+std::wstring g_root_path;
 std::atomic<bool> g_is_indexing{false};
 std::atomic<bool> g_is_ready{false};
 std::atomic<uint64_t> g_indexed_count{0};
+std::atomic<uint64_t> g_live_watcher_token{0};
+std::atomic<bool> g_duplicate_scan_running{false};
+std::atomic<bool> g_duplicate_cancel_requested{false};
+std::atomic<uint64_t> g_duplicate_progress_done{0};
+std::atomic<uint64_t> g_duplicate_progress_total{0};
+std::atomic<uint64_t> g_duplicate_groups_found{0};
 std::mutex g_error_mutex;
 std::string g_last_error;
 
@@ -165,6 +204,38 @@ bool IsPathMissingError(const DWORD error_code) {
          error_code == ERROR_BAD_NETPATH ||
          error_code == ERROR_BAD_NET_NAME ||
          error_code == ERROR_NOT_READY;
+}
+
+bool IsLiveWatcherCancelled(const uint64_t token) {
+  return g_live_watcher_token.load(std::memory_order_acquire) != token;
+}
+
+void StopLiveWatcher() {
+  g_live_watcher_token.fetch_add(1, std::memory_order_acq_rel);
+}
+
+bool IsDuplicateScanCancelRequested() {
+  return g_duplicate_cancel_requested.load(std::memory_order_acquire);
+}
+
+void ResetDuplicateProgress() {
+  g_duplicate_progress_done.store(0, std::memory_order_release);
+  g_duplicate_progress_total.store(0, std::memory_order_release);
+  g_duplicate_groups_found.store(0, std::memory_order_release);
+}
+
+void AddDuplicateProgressTotal(const uint64_t units) {
+  if (units == 0) {
+    return;
+  }
+  g_duplicate_progress_total.fetch_add(units, std::memory_order_acq_rel);
+}
+
+void AddDuplicateProgressDone(const uint64_t units) {
+  if (units == 0) {
+    return;
+  }
+  g_duplicate_progress_done.fetch_add(units, std::memory_order_acq_rel);
 }
 
 std::wstring NormalizeDriveLetter(const char* drive_utf8) {
@@ -342,6 +413,47 @@ std::string SearchRowsToJson(const std::vector<SearchRow>& rows) {
   return json;
 }
 
+std::string DuplicateGroupsToJson(const std::vector<DuplicateGroupRow>& groups) {
+  std::string json;
+  json.reserve(groups.size() * 320);
+  json.push_back('[');
+  for (size_t i = 0; i < groups.size(); ++i) {
+    if (i > 0) {
+      json.push_back(',');
+    }
+    const DuplicateGroupRow& group = groups[i];
+    json.append("{\"groupId\":\"");
+    AppendEscapedJsonString(&json, group.group_id);
+    json.append("\",\"size\":");
+    json.append(std::to_string(group.size));
+    json.append(",\"totalBytes\":");
+    json.append(std::to_string(group.total_bytes));
+    json.append(",\"fileCount\":");
+    json.append(std::to_string(group.file_count));
+    json.append(",\"files\":[");
+    for (size_t file_index = 0; file_index < group.files.size(); ++file_index) {
+      if (file_index > 0) {
+        json.push_back(',');
+      }
+      const DuplicateFileRow& file = group.files[file_index];
+      json.append("{\"name\":\"");
+      AppendEscapedJsonString(&json, WideToUtf8(file.name));
+      json.append("\",\"path\":\"");
+      AppendEscapedJsonString(&json, WideToUtf8(file.path));
+      json.append("\",\"size\":");
+      json.append(std::to_string(file.size));
+      json.append(",\"createdUnix\":");
+      json.append(std::to_string(file.created_unix));
+      json.append(",\"modifiedUnix\":");
+      json.append(std::to_string(file.modified_unix));
+      json.push_back('}');
+    }
+    json.append("]}");
+  }
+  json.push_back(']');
+  return json;
+}
+
 std::string DriveRowsToJson(const std::vector<DriveInfo>& rows) {
   std::string json;
   json.reserve(rows.size() * 120);
@@ -383,6 +495,46 @@ std::string BasicFilesToJson(const std::vector<IndexedFile>& files) {
     json.append("\"}");
   }
   json.push_back(']');
+  return json;
+}
+
+std::string DuplicateScanStatusToJson() {
+  const bool running = g_duplicate_scan_running.load(std::memory_order_acquire);
+  const bool cancel_requested =
+      g_duplicate_cancel_requested.load(std::memory_order_acquire);
+  const uint64_t scanned_files =
+      g_duplicate_progress_done.load(std::memory_order_acquire);
+  const uint64_t total_files =
+      g_duplicate_progress_total.load(std::memory_order_acquire);
+  const uint64_t groups_found =
+      g_duplicate_groups_found.load(std::memory_order_acquire);
+  double progress_percent = 0.0;
+  if (total_files > 0) {
+    progress_percent =
+        (static_cast<double>(scanned_files) * 100.0) / static_cast<double>(total_files);
+    if (progress_percent > 100.0) {
+      progress_percent = 100.0;
+    }
+  }
+
+  char percent_buffer[32];
+  std::snprintf(percent_buffer, sizeof(percent_buffer), "%.2f", progress_percent);
+
+  std::string json;
+  json.reserve(196);
+  json.append("{\"running\":");
+  json.append(running ? "true" : "false");
+  json.append(",\"cancelRequested\":");
+  json.append(cancel_requested ? "true" : "false");
+  json.append(",\"scannedFiles\":");
+  json.append(std::to_string(scanned_files));
+  json.append(",\"totalFiles\":");
+  json.append(std::to_string(total_files));
+  json.append(",\"groupsFound\":");
+  json.append(std::to_string(groups_found));
+  json.append(",\"progressPercent\":");
+  json.append(percent_buffer);
+  json.push_back('}');
   return json;
 }
 
@@ -441,6 +593,7 @@ bool ParseUsnRecord(const BYTE* record_ptr, DWORD record_length, RawUsnEntry* ou
     out->frn = v2->FileReferenceNumber;
     out->parent_frn = v2->ParentFileReferenceNumber;
     out->is_directory = (v2->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    out->reason = v2->Reason;
     out->name.assign(name_ptr, v2->FileNameLength / sizeof(wchar_t));
     return true;
   }
@@ -461,6 +614,7 @@ bool ParseUsnRecord(const BYTE* record_ptr, DWORD record_length, RawUsnEntry* ou
     out->frn = FileId128ToU64(v3->FileReferenceNumber);
     out->parent_frn = FileId128ToU64(v3->ParentFileReferenceNumber);
     out->is_directory = (v3->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    out->reason = v3->Reason;
     out->name.assign(name_ptr, v3->FileNameLength / sizeof(wchar_t));
     return true;
   }
@@ -469,32 +623,38 @@ bool ParseUsnRecord(const BYTE* record_ptr, DWORD record_length, RawUsnEntry* ou
   return false;
 }
 
-std::wstring ResolvePathForFrn(
+bool ResolvePathForFrn(
     uint64_t frn, uint64_t root_frn, const std::wstring& root_path,
     const std::unordered_map<uint64_t, NodeEntry>& nodes,
     std::unordered_map<uint64_t, std::wstring>* cache,
-    std::unordered_set<uint64_t>* resolving) {
+    std::unordered_set<uint64_t>* resolving, std::wstring* out_path) {
   const auto cached = cache->find(frn);
   if (cached != cache->end()) {
-    return cached->second;
+    *out_path = cached->second;
+    return true;
   }
 
   if (frn == root_frn) {
-    return root_path;
+    *out_path = root_path;
+    return true;
   }
 
   const auto node_it = nodes.find(frn);
   if (node_it == nodes.end()) {
-    return root_path;
+    return false;
   }
 
   if (!resolving->insert(frn).second) {
-    return root_path;
+    return false;
   }
-  const std::wstring parent_path =
-      ResolvePathForFrn(node_it->second.parent_frn, root_frn, root_path, nodes, cache,
-                        resolving);
+
+  std::wstring parent_path;
+  const bool parent_ok = ResolvePathForFrn(node_it->second.parent_frn, root_frn, root_path,
+                                           nodes, cache, resolving, &parent_path);
   resolving->erase(frn);
+  if (!parent_ok) {
+    return false;
+  }
 
   std::wstring full_path = parent_path;
   if (!full_path.empty() && full_path.back() != L'\\') {
@@ -502,12 +662,676 @@ std::wstring ResolvePathForFrn(
   }
   full_path.append(node_it->second.name);
   (*cache)[frn] = full_path;
-  return full_path;
+  *out_path = full_path;
+  return true;
 }
 
-bool scan_mft_internal(const std::wstring& drive_letter, std::vector<IndexedFile>* out_files,
+void RebuildFilePositionLookupLocked() {
+  g_file_position_by_frn.clear();
+  g_file_position_by_frn.reserve(g_indexed_files.size() * 2 + 1);
+  for (size_t i = 0; i < g_indexed_files.size(); ++i) {
+    g_file_position_by_frn[g_indexed_files[i].frn] = i;
+  }
+}
+
+void RemoveIndexedFileByFrnLocked(const uint64_t frn) {
+  const auto position_it = g_file_position_by_frn.find(frn);
+  if (position_it == g_file_position_by_frn.end()) {
+    return;
+  }
+
+  const size_t remove_index = position_it->second;
+  const size_t last_index = g_indexed_files.size() - 1;
+  if (remove_index != last_index) {
+    g_indexed_files[remove_index] = std::move(g_indexed_files[last_index]);
+    g_file_position_by_frn[g_indexed_files[remove_index].frn] = remove_index;
+  }
+  g_indexed_files.pop_back();
+  g_file_position_by_frn.erase(position_it);
+}
+
+void UpsertIndexedFileLocked(const uint64_t frn, const std::wstring& name,
+                             std::wstring full_path) {
+  IndexedFile next_file{frn, name, std::move(full_path), ExtractExtensionLower(name)};
+  const auto position_it = g_file_position_by_frn.find(frn);
+  if (position_it == g_file_position_by_frn.end()) {
+    g_file_position_by_frn.emplace(frn, g_indexed_files.size());
+    g_indexed_files.push_back(std::move(next_file));
+    return;
+  }
+
+  g_indexed_files[position_it->second] = std::move(next_file);
+}
+
+void RebuildIndexedFilesFromNodesLocked() {
+  g_indexed_files.clear();
+  g_file_position_by_frn.clear();
+  if (g_root_frn == 0 || g_root_path.empty() || g_nodes.empty()) {
+    return;
+  }
+
+  g_indexed_files.reserve(g_nodes.size() / 2 + 1);
+  g_file_position_by_frn.reserve(g_nodes.size() / 2 + 1);
+
+  std::unordered_map<uint64_t, std::wstring> path_cache;
+  path_cache.reserve(g_nodes.size() / 2 + 1);
+  path_cache[g_root_frn] = g_root_path;
+  std::unordered_set<uint64_t> resolving;
+
+  for (const auto& pair : g_nodes) {
+    const uint64_t frn = pair.first;
+    const NodeEntry& node = pair.second;
+    if (node.is_directory || node.name.empty()) {
+      continue;
+    }
+
+    resolving.clear();
+    std::wstring full_path;
+    const bool resolved = ResolvePathForFrn(frn, g_root_frn, g_root_path, g_nodes,
+                                            &path_cache, &resolving, &full_path);
+    if (!resolved || full_path.empty()) {
+      continue;
+    }
+
+    g_file_position_by_frn.emplace(frn, g_indexed_files.size());
+    g_indexed_files.push_back(
+        IndexedFile{frn, node.name, std::move(full_path), ExtractExtensionLower(node.name)});
+  }
+}
+
+void ApplyUsnBatchLocked(const std::vector<RawUsnEntry>& entries) {
+  if (g_root_frn == 0 || g_root_path.empty() || entries.empty()) {
+    return;
+  }
+
+  bool requires_full_rebuild = false;
+  std::unordered_map<uint64_t, std::wstring> path_cache;
+  path_cache.reserve(entries.size() * 2 + 8);
+  path_cache[g_root_frn] = g_root_path;
+  std::unordered_set<uint64_t> resolving;
+
+  for (const RawUsnEntry& entry : entries) {
+    if (entry.frn == 0 || entry.name.empty()) {
+      continue;
+    }
+
+    const bool is_delete = (entry.reason & USN_REASON_FILE_DELETE) != 0;
+    const bool is_old_rename_only =
+        (entry.reason & USN_REASON_RENAME_OLD_NAME) != 0 &&
+        (entry.reason & USN_REASON_RENAME_NEW_NAME) == 0 && !is_delete;
+    if (is_old_rename_only) {
+      continue;
+    }
+
+    auto old_node_it = g_nodes.find(entry.frn);
+    const bool had_old_node = old_node_it != g_nodes.end();
+    NodeEntry old_node{};
+    if (had_old_node) {
+      old_node = old_node_it->second;
+    }
+
+    if (is_delete) {
+      if (had_old_node && old_node.is_directory) {
+        requires_full_rebuild = true;
+      }
+      g_nodes.erase(entry.frn);
+      RemoveIndexedFileByFrnLocked(entry.frn);
+      continue;
+    }
+
+    g_nodes[entry.frn] = NodeEntry{entry.parent_frn, entry.name, entry.is_directory};
+
+    if (entry.is_directory) {
+      RemoveIndexedFileByFrnLocked(entry.frn);
+      if (!had_old_node || !old_node.is_directory ||
+          old_node.parent_frn != entry.parent_frn || old_node.name != entry.name) {
+        requires_full_rebuild = true;
+      }
+      continue;
+    }
+
+    resolving.clear();
+    std::wstring full_path;
+    const bool resolved = ResolvePathForFrn(entry.frn, g_root_frn, g_root_path, g_nodes,
+                                            &path_cache, &resolving, &full_path);
+    if (!resolved || full_path.empty()) {
+      RemoveIndexedFileByFrnLocked(entry.frn);
+      continue;
+    }
+
+    UpsertIndexedFileLocked(entry.frn, entry.name, std::move(full_path));
+  }
+
+  if (requires_full_rebuild) {
+    RebuildIndexedFilesFromNodesLocked();
+  }
+  g_indexed_count.store(static_cast<uint64_t>(g_indexed_files.size()),
+                        std::memory_order_release);
+}
+
+void ApplyScanSnapshotLocked(ScanSnapshot* snapshot) {
+  g_indexed_files = std::move(snapshot->files);
+  g_nodes = std::move(snapshot->nodes);
+  g_root_frn = snapshot->root_frn;
+  g_root_path = std::move(snapshot->root_path);
+  RebuildFilePositionLookupLocked();
+}
+
+std::string BuildDuplicateGroupId(const uint64_t size, const uint64_t hash_value,
+                                  const uint32_t serial) {
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%016llx-%016llx-%08lx",
+                static_cast<unsigned long long>(size),
+                static_cast<unsigned long long>(hash_value),
+                static_cast<unsigned long>(serial));
+  return std::string(buffer);
+}
+
+constexpr uint64_t kFNVOffsetBasis = 1469598103934665603ULL;
+constexpr uint64_t kFNVPrime = 1099511628211ULL;
+
+void FNV1aMixBuffer(const BYTE* bytes, const size_t len, uint64_t* hash) {
+  for (size_t i = 0; i < len; ++i) {
+    *hash ^= static_cast<uint64_t>(bytes[i]);
+    *hash *= kFNVPrime;
+  }
+}
+
+void FNV1aMixU64(const uint64_t value, uint64_t* hash) {
+  const BYTE* bytes = reinterpret_cast<const BYTE*>(&value);
+  FNV1aMixBuffer(bytes, sizeof(value), hash);
+}
+
+bool HashFileFNV1a64(const std::wstring& path, uint64_t* out_hash) {
+  if (IsDuplicateScanCancelRequested()) {
+    return false;
+  }
+
+  HANDLE file = CreateFileW(
+      path.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  constexpr DWORD kBufferSize = 1 * 1024 * 1024;
+  thread_local std::vector<BYTE> buffer;
+  if (buffer.size() != kBufferSize) {
+    buffer.resize(kBufferSize);
+  }
+  uint64_t hash = kFNVOffsetBasis;
+
+  bool ok = true;
+  while (true) {
+    if (IsDuplicateScanCancelRequested()) {
+      ok = false;
+      break;
+    }
+
+    DWORD bytes_read = 0;
+    const BOOL read_ok =
+        ReadFile(file, buffer.data(), kBufferSize, &bytes_read, nullptr);
+    if (!read_ok) {
+      ok = false;
+      break;
+    }
+    if (bytes_read == 0) {
+      break;
+    }
+    FNV1aMixBuffer(buffer.data(), bytes_read, &hash);
+  }
+
+  CloseHandle(file);
+  if (!ok) {
+    return false;
+  }
+  *out_hash = hash;
+  return true;
+}
+
+bool HashFileQuickSignature64(const DuplicateFileRow& file, uint64_t* out_hash) {
+  if (IsDuplicateScanCancelRequested()) {
+    return false;
+  }
+
+  uint64_t hash = kFNVOffsetBasis;
+  FNV1aMixU64(file.size, &hash);
+  if (file.size == 0) {
+    *out_hash = hash;
+    return true;
+  }
+
+  HANDLE handle = CreateFileW(
+      file.path.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  constexpr DWORD kChunkBytes = 64 * 1024;
+  thread_local std::vector<BYTE> buffer;
+  if (buffer.size() != kChunkBytes) {
+    buffer.resize(kChunkBytes);
+  }
+
+  const DWORD first_bytes =
+      static_cast<DWORD>(std::min<uint64_t>(file.size, kChunkBytes));
+  DWORD first_read = 0;
+  bool ok = ReadFile(handle, buffer.data(), first_bytes, &first_read, nullptr) != FALSE &&
+            first_read == first_bytes;
+  if (ok && first_read > 0) {
+    FNV1aMixBuffer(buffer.data(), first_read, &hash);
+  }
+
+  if (ok && file.size > static_cast<uint64_t>(first_bytes)) {
+    if (IsDuplicateScanCancelRequested()) {
+      ok = false;
+    }
+
+    const DWORD tail_bytes =
+        static_cast<DWORD>(std::min<uint64_t>(file.size, kChunkBytes));
+    LARGE_INTEGER offset{};
+    offset.QuadPart = static_cast<LONGLONG>(file.size - tail_bytes);
+    ok = SetFilePointerEx(handle, offset, nullptr, FILE_BEGIN) != FALSE;
+    if (ok) {
+      DWORD tail_read = 0;
+      ok = ReadFile(handle, buffer.data(), tail_bytes, &tail_read, nullptr) != FALSE &&
+           tail_read == tail_bytes;
+      if (ok && tail_read > 0) {
+        FNV1aMixBuffer(buffer.data(), tail_read, &hash);
+      }
+    }
+  }
+
+  CloseHandle(handle);
+  if (!ok) {
+    return false;
+  }
+
+  *out_hash = hash;
+  return true;
+}
+
+bool AreFilesByteEqual(const std::wstring& left_path, const std::wstring& right_path) {
+  if (IsDuplicateScanCancelRequested()) {
+    return false;
+  }
+
+  HANDLE left = CreateFileW(
+      left_path.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (left == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  HANDLE right = CreateFileW(
+      right_path.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (right == INVALID_HANDLE_VALUE) {
+    CloseHandle(left);
+    return false;
+  }
+
+  constexpr DWORD kBufferSize = 1 * 1024 * 1024;
+  thread_local std::vector<BYTE> left_buffer;
+  thread_local std::vector<BYTE> right_buffer;
+  if (left_buffer.size() != kBufferSize) {
+    left_buffer.resize(kBufferSize);
+  }
+  if (right_buffer.size() != kBufferSize) {
+    right_buffer.resize(kBufferSize);
+  }
+  DWORD left_read = 0;
+  DWORD right_read = 0;
+  bool equal = true;
+
+  while (true) {
+    if (IsDuplicateScanCancelRequested()) {
+      equal = false;
+      break;
+    }
+
+    const BOOL left_ok = ReadFile(left, left_buffer.data(), kBufferSize, &left_read, nullptr);
+    const BOOL right_ok =
+        ReadFile(right, right_buffer.data(), kBufferSize, &right_read, nullptr);
+    if (!left_ok || !right_ok) {
+      equal = false;
+      break;
+    }
+    if (left_read != right_read) {
+      equal = false;
+      break;
+    }
+    if (left_read == 0) {
+      break;
+    }
+    if (std::memcmp(left_buffer.data(), right_buffer.data(), left_read) != 0) {
+      equal = false;
+      break;
+    }
+  }
+
+  CloseHandle(right);
+  CloseHandle(left);
+  return equal;
+}
+
+bool HashDuplicateFileFull(const DuplicateFileRow& file, uint64_t* out_hash) {
+  return HashFileFNV1a64(file.path, out_hash);
+}
+
+bool HashDuplicateFileQuick(const DuplicateFileRow& file, uint64_t* out_hash) {
+  return HashFileQuickSignature64(file, out_hash);
+}
+
+using DuplicateHashFn = bool (*)(const DuplicateFileRow&, uint64_t*);
+
+size_t ComputeDuplicateWorkerCount(const size_t item_count) {
+  if (item_count == 0) {
+    return 1;
+  }
+
+  size_t worker_count = std::thread::hardware_concurrency();
+  if (worker_count == 0) {
+    worker_count = 4;
+  }
+  const size_t reserved_cores = worker_count > 4 ? 2 : 1;
+  const size_t usable_workers = worker_count > reserved_cores
+                                    ? worker_count - reserved_cores
+                                    : static_cast<size_t>(1);
+  return std::max<size_t>(1, std::min(usable_workers, item_count));
+}
+
+void HashFilesParallel(const std::vector<DuplicateFileRow>& files,
+                       std::vector<uint64_t>* out_hashes,
+                       std::vector<uint8_t>* out_ok_flags,
+                       const DuplicateHashFn hash_fn,
+                       const bool track_progress) {
+  out_hashes->assign(files.size(), 0);
+  out_ok_flags->assign(files.size(), 0);
+  if (files.empty()) {
+    return;
+  }
+
+  const size_t worker_count = ComputeDuplicateWorkerCount(files.size());
+
+  std::atomic<size_t> next_index{0};
+  std::vector<std::thread> workers;
+  workers.reserve(worker_count);
+  for (size_t worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back([&]() {
+      while (true) {
+        if (IsDuplicateScanCancelRequested()) {
+          return;
+        }
+
+        const size_t index = next_index.fetch_add(1, std::memory_order_relaxed);
+        if (index >= files.size()) {
+          return;
+        }
+        uint64_t hash = 0;
+        if (hash_fn != nullptr && hash_fn(files[index], &hash)) {
+          (*out_hashes)[index] = hash;
+          (*out_ok_flags)[index] = 1;
+        }
+        if (track_progress) {
+          AddDuplicateProgressDone(1);
+        }
+      }
+    });
+  }
+
+  for (std::thread& worker : workers) {
+    worker.join();
+  }
+}
+
+std::vector<DuplicateGroupRow> find_duplicates_internal(const uint64_t min_size,
+                                                        const uint32_t max_groups,
+                                                        const uint32_t max_files_per_group) {
+  std::vector<IndexedFile> indexed_snapshot;
+  {
+    std::shared_lock<std::shared_mutex> lock(g_index_mutex);
+    indexed_snapshot = g_indexed_files;
+  }
+
+  std::vector<uint64_t> metadata_sizes(indexed_snapshot.size(), 0);
+  std::vector<int64_t> metadata_created(indexed_snapshot.size(), 0);
+  std::vector<int64_t> metadata_modified(indexed_snapshot.size(), 0);
+  std::vector<uint8_t> metadata_ok(indexed_snapshot.size(), 0);
+  std::unordered_map<uint64_t, std::vector<DuplicateFileRow>> size_buckets;
+  size_buckets.reserve(indexed_snapshot.size() / 4 + 1);
+  std::vector<DuplicateGroupRow> groups;
+  groups.reserve(128);
+  uint32_t group_serial = 0;
+
+  AddDuplicateProgressTotal(static_cast<uint64_t>(indexed_snapshot.size()));
+  const size_t metadata_workers = ComputeDuplicateWorkerCount(indexed_snapshot.size());
+  std::atomic<size_t> metadata_index{0};
+  std::vector<std::thread> metadata_threads;
+  metadata_threads.reserve(metadata_workers);
+  for (size_t worker = 0; worker < metadata_workers; ++worker) {
+    metadata_threads.emplace_back([&]() {
+      while (true) {
+        if (IsDuplicateScanCancelRequested()) {
+          return;
+        }
+
+        const size_t index = metadata_index.fetch_add(1, std::memory_order_relaxed);
+        if (index >= indexed_snapshot.size()) {
+          return;
+        }
+        const IndexedFile& file = indexed_snapshot[index];
+        uint64_t size = 0;
+        int64_t created = 0;
+        int64_t modified = 0;
+        const bool metadata_loaded =
+            ReadFileMetadata(file.path, &size, &created, &modified);
+        if (!metadata_loaded || size < min_size) {
+          AddDuplicateProgressDone(1);
+          continue;
+        }
+        metadata_sizes[index] = size;
+        metadata_created[index] = created;
+        metadata_modified[index] = modified;
+        metadata_ok[index] = 1;
+        AddDuplicateProgressDone(1);
+      }
+    });
+  }
+  for (std::thread& worker : metadata_threads) {
+    worker.join();
+  }
+  if (IsDuplicateScanCancelRequested()) {
+    goto duplicate_finish;
+  }
+
+  for (size_t index = 0; index < indexed_snapshot.size(); ++index) {
+    if (IsDuplicateScanCancelRequested()) {
+      goto duplicate_finish;
+    }
+    if (!metadata_ok[index]) {
+      continue;
+    }
+    const IndexedFile& file = indexed_snapshot[index];
+    const uint64_t size = metadata_sizes[index];
+    size_buckets[size].push_back(DuplicateFileRow{
+        file.name,
+        file.path,
+        size,
+        metadata_created[index],
+        metadata_modified[index],
+    });
+  }
+
+  for (auto& size_bucket : size_buckets) {
+    if (IsDuplicateScanCancelRequested()) {
+      goto duplicate_finish;
+    }
+
+    const uint64_t file_size = size_bucket.first;
+    std::vector<DuplicateFileRow>& files = size_bucket.second;
+    if (files.size() < 2) {
+      continue;
+    }
+
+    // Fast path for empty files: same content by definition, no disk reads needed.
+    if (file_size == 0) {
+      DuplicateGroupRow row{};
+      row.group_id = BuildDuplicateGroupId(0, 0, group_serial++);
+      row.size = 0;
+      row.file_count = static_cast<uint32_t>(files.size());
+      row.total_bytes = 0;
+      const size_t render_count = std::min<size_t>(files.size(), max_files_per_group);
+      row.files.reserve(render_count);
+      for (size_t i = 0; i < render_count; ++i) {
+        row.files.push_back(files[i]);
+      }
+      groups.push_back(std::move(row));
+      g_duplicate_groups_found.store(static_cast<uint64_t>(groups.size()),
+                                     std::memory_order_release);
+      if (groups.size() >= max_groups) {
+        goto duplicate_finish;
+      }
+      continue;
+    }
+
+    // Stage 1: quick signature (size + first chunk + last chunk).
+    std::vector<uint64_t> quick_signatures;
+    std::vector<uint8_t> quick_ok_flags;
+    AddDuplicateProgressTotal(static_cast<uint64_t>(files.size()));
+    HashFilesParallel(files, &quick_signatures, &quick_ok_flags, HashDuplicateFileQuick,
+                      true);
+    if (IsDuplicateScanCancelRequested()) {
+      goto duplicate_finish;
+    }
+
+    std::unordered_map<uint64_t, std::vector<size_t>> quick_buckets;
+    quick_buckets.reserve(files.size());
+    for (size_t i = 0; i < files.size(); ++i) {
+      if (!quick_ok_flags[i]) {
+        continue;
+      }
+      quick_buckets[quick_signatures[i]].push_back(i);
+    }
+
+    for (const auto& quick_bucket : quick_buckets) {
+      const std::vector<size_t>& quick_indices = quick_bucket.second;
+      if (quick_indices.size() < 2) {
+        continue;
+      }
+
+      std::vector<DuplicateFileRow> quick_candidates;
+      quick_candidates.reserve(quick_indices.size());
+      for (const size_t quick_index : quick_indices) {
+        quick_candidates.push_back(files[quick_index]);
+      }
+
+      // Stage 2: full-file hash only for quick-signature collisions.
+      std::vector<uint64_t> full_hashes;
+      std::vector<uint8_t> full_ok_flags;
+      AddDuplicateProgressTotal(static_cast<uint64_t>(quick_candidates.size()));
+      HashFilesParallel(quick_candidates, &full_hashes, &full_ok_flags,
+                        HashDuplicateFileFull, true);
+      if (IsDuplicateScanCancelRequested()) {
+        goto duplicate_finish;
+      }
+
+      std::unordered_map<uint64_t, std::vector<size_t>> full_hash_buckets;
+      full_hash_buckets.reserve(quick_candidates.size());
+      for (size_t i = 0; i < quick_candidates.size(); ++i) {
+        if (!full_ok_flags[i]) {
+          continue;
+        }
+        full_hash_buckets[full_hashes[i]].push_back(i);
+      }
+
+      for (const auto& hash_bucket : full_hash_buckets) {
+        const uint64_t hash_value = hash_bucket.first;
+        const std::vector<size_t>& candidate_indices = hash_bucket.second;
+        if (candidate_indices.size() < 2) {
+          continue;
+        }
+
+        std::vector<std::vector<size_t>> verified_clusters;
+        verified_clusters.reserve(candidate_indices.size());
+        for (const size_t index : candidate_indices) {
+          bool matched_cluster = false;
+          for (std::vector<size_t>& cluster : verified_clusters) {
+            const size_t representative = cluster.front();
+            if (AreFilesByteEqual(quick_candidates[index].path,
+                                  quick_candidates[representative].path)) {
+              cluster.push_back(index);
+              matched_cluster = true;
+              break;
+            }
+          }
+          if (!matched_cluster) {
+            verified_clusters.push_back(std::vector<size_t>{index});
+          }
+        }
+
+        for (const std::vector<size_t>& cluster : verified_clusters) {
+          if (cluster.size() < 2) {
+            continue;
+          }
+
+          DuplicateGroupRow row{};
+          row.group_id = BuildDuplicateGroupId(file_size, hash_value, group_serial++);
+          row.size = file_size;
+          row.file_count = static_cast<uint32_t>(cluster.size());
+          row.total_bytes = file_size * static_cast<uint64_t>(cluster.size());
+          const size_t render_count = std::min<size_t>(cluster.size(), max_files_per_group);
+          row.files.reserve(render_count);
+          for (size_t i = 0; i < render_count; ++i) {
+            row.files.push_back(quick_candidates[cluster[i]]);
+          }
+          groups.push_back(std::move(row));
+          g_duplicate_groups_found.store(static_cast<uint64_t>(groups.size()),
+                                         std::memory_order_release);
+
+          if (groups.size() >= max_groups) {
+            goto duplicate_finish;
+          }
+        }
+      }
+    }
+  }
+
+duplicate_finish:
+  if (!IsDuplicateScanCancelRequested()) {
+    const uint64_t total = g_duplicate_progress_total.load(std::memory_order_acquire);
+    g_duplicate_progress_done.store(total, std::memory_order_release);
+  }
+
+  std::sort(groups.begin(), groups.end(), [](const DuplicateGroupRow& left,
+                                             const DuplicateGroupRow& right) {
+    const uint64_t left_reclaimable =
+        left.size * static_cast<uint64_t>(left.file_count > 0 ? left.file_count - 1 : 0);
+    const uint64_t right_reclaimable =
+        right.size * static_cast<uint64_t>(right.file_count > 0 ? right.file_count - 1 : 0);
+    if (left_reclaimable != right_reclaimable) {
+      return left_reclaimable > right_reclaimable;
+    }
+    return left.file_count > right.file_count;
+  });
+
+  return groups;
+}
+
+bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snapshot,
                        std::string* out_error) {
-  out_files->clear();
+  out_snapshot->files.clear();
+  out_snapshot->nodes.clear();
+  out_snapshot->root_frn = 0;
+  out_snapshot->root_path.clear();
+  out_snapshot->journal_id = 0;
+  out_snapshot->journal_next_usn = 0;
+  out_snapshot->live_updates_supported = false;
 
   const std::wstring root_path = drive_letter + L":\\";
   const std::wstring volume_path = L"\\\\.\\" + drive_letter + L":";
@@ -630,17 +1454,129 @@ bool scan_mft_internal(const std::wstring& drive_letter, std::vector<IndexedFile
       continue;
     }
     resolving.clear();
-    std::wstring full_path =
-        ResolvePathForFrn(frn, root_frn, root_path, nodes, &path_cache, &resolving);
-    if (full_path.empty()) {
+    std::wstring full_path;
+    const bool resolved = ResolvePathForFrn(frn, root_frn, root_path, nodes, &path_cache,
+                                            &resolving, &full_path);
+    if (!resolved || full_path.empty()) {
       continue;
     }
-    files.push_back(
-        IndexedFile{node.name, std::move(full_path), ExtractExtensionLower(node.name)});
+    files.push_back(IndexedFile{frn, node.name, std::move(full_path),
+                                ExtractExtensionLower(node.name)});
   }
 
-  *out_files = std::move(files);
+  out_snapshot->files = std::move(files);
+  out_snapshot->nodes = std::move(nodes);
+  out_snapshot->root_frn = root_frn;
+  out_snapshot->root_path = root_path;
+  out_snapshot->live_updates_supported = has_journal;
+  if (has_journal) {
+    out_snapshot->journal_id = journal.UsnJournalID;
+    out_snapshot->journal_next_usn = journal.NextUsn;
+  }
   return true;
+}
+
+void StartLiveUsnWatcher(const std::wstring& drive_letter, const uint64_t journal_id,
+                         const int64_t start_usn) {
+  if (journal_id == 0 || start_usn <= 0) {
+    return;
+  }
+
+  const uint64_t watcher_token =
+      g_live_watcher_token.fetch_add(1, std::memory_order_acq_rel) + 1;
+  std::thread([drive_letter, journal_id, start_usn, watcher_token]() {
+    const std::wstring volume_path = L"\\\\.\\" + drive_letter + L":";
+    HANDLE volume = CreateFileW(
+        volume_path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (volume == INVALID_HANDLE_VALUE) {
+      if (!IsLiveWatcherCancelled(watcher_token)) {
+        SetLastErrorText(BuildWin32ErrorText(
+            "Live updates could not start (unable to open volume).", GetLastError()));
+      }
+      return;
+    }
+
+    READ_USN_JOURNAL_DATA_V0 read_data{};
+    read_data.StartUsn = static_cast<USN>(start_usn);
+    read_data.ReasonMask = 0xFFFFFFFF;
+    read_data.ReturnOnlyOnClose = 0;
+    read_data.Timeout = 0;
+    read_data.BytesToWaitFor = 0;
+    read_data.UsnJournalID = journal_id;
+
+    constexpr DWORD kWatchBufferSize = 1 * 1024 * 1024;
+    std::vector<BYTE> buffer(kWatchBufferSize);
+
+    while (!IsLiveWatcherCancelled(watcher_token)) {
+      DWORD returned = 0;
+      const BOOL ok = DeviceIoControl(
+          volume, FSCTL_READ_USN_JOURNAL, &read_data, sizeof(read_data),
+          buffer.data(), kWatchBufferSize, &returned, nullptr);
+      if (!ok) {
+        const DWORD error = GetLastError();
+        if (IsLiveWatcherCancelled(watcher_token)) {
+          break;
+        }
+
+        if (error == ERROR_HANDLE_EOF) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(120));
+          continue;
+        }
+
+        if (error == ERROR_JOURNAL_ENTRY_DELETED ||
+            error == ERROR_JOURNAL_DELETE_IN_PROGRESS ||
+            error == ERROR_JOURNAL_NOT_ACTIVE || error == ERROR_INVALID_PARAMETER) {
+          SetLastErrorText(
+              "Live updates paused because the USN journal changed. Click Reindex.");
+          break;
+        }
+
+        SetLastErrorText(BuildWin32ErrorText(
+            "Live updates paused because USN monitoring failed.", error));
+        break;
+      }
+
+      if (returned < sizeof(USN)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        continue;
+      }
+
+      read_data.StartUsn = *reinterpret_cast<const USN*>(buffer.data());
+      if (returned == sizeof(USN)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        continue;
+      }
+
+      std::vector<RawUsnEntry> batch;
+      batch.reserve(512);
+      DWORD offset = sizeof(USN);
+      while (offset + sizeof(DWORD) <= returned) {
+        const BYTE* record_ptr = buffer.data() + offset;
+        const DWORD record_length = *reinterpret_cast<const DWORD*>(record_ptr);
+        if (record_length == 0 || offset + record_length > returned) {
+          break;
+        }
+
+        RawUsnEntry entry{};
+        if (ParseUsnRecord(record_ptr, record_length, &entry) && !entry.name.empty()) {
+          batch.push_back(std::move(entry));
+        }
+
+        offset += record_length;
+      }
+
+      if (batch.empty() || IsLiveWatcherCancelled(watcher_token)) {
+        continue;
+      }
+
+      std::unique_lock<std::shared_mutex> lock(g_index_mutex);
+      ApplyUsnBatchLocked(batch);
+    }
+
+    CloseHandle(volume);
+  }).detach();
 }
 
 std::vector<DriveInfo> list_drives_internal() {
@@ -700,22 +1636,26 @@ extern "C" __declspec(dllexport) bool omni_start_indexing(const char* drive_utf8
   g_is_ready.store(false, std::memory_order_release);
   g_indexed_count.store(0, std::memory_order_release);
   SetLastErrorText("");
+  StopLiveWatcher();
   const std::wstring drive_letter = NormalizeDriveLetter(drive_utf8);
 
   std::thread([drive_letter]() {
-    std::vector<IndexedFile> refreshed_index;
+    ScanSnapshot snapshot;
     std::string error;
-    const bool ok = scan_mft_internal(drive_letter, &refreshed_index, &error);
+    const bool ok = scan_mft_internal(drive_letter, &snapshot, &error);
     if (ok) {
-      const uint64_t indexed_count =
-          static_cast<uint64_t>(refreshed_index.size());
+      const uint64_t indexed_count = static_cast<uint64_t>(snapshot.files.size());
       {
         std::unique_lock<std::shared_mutex> lock(g_index_mutex);
-        g_indexed_files.swap(refreshed_index);
+        ApplyScanSnapshotLocked(&snapshot);
       }
       g_indexed_count.store(indexed_count, std::memory_order_release);
       g_is_ready.store(true, std::memory_order_release);
       SetLastErrorText("");
+      if (snapshot.live_updates_supported) {
+        StartLiveUsnWatcher(drive_letter, snapshot.journal_id,
+                            snapshot.journal_next_usn);
+      }
     } else {
       g_is_ready.store(false, std::memory_order_release);
       g_indexed_count.store(0, std::memory_order_release);
@@ -829,16 +1769,77 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
   return out;
 }
 
+extern "C" __declspec(dllexport) char* omni_find_duplicates_json(
+    uint64_t min_size, uint32_t requested_max_groups,
+    uint32_t requested_max_files_per_group) {
+  if (!g_is_ready.load(std::memory_order_acquire)) {
+    SetLastErrorText("Index is not ready yet. Wait for indexing to finish.");
+    return nullptr;
+  }
+
+  const bool already_running =
+      g_duplicate_scan_running.exchange(true, std::memory_order_acq_rel);
+  if (already_running) {
+    SetLastErrorText("Duplicate scan is already running.");
+    return nullptr;
+  }
+
+  g_duplicate_cancel_requested.store(false, std::memory_order_release);
+  ResetDuplicateProgress();
+  const uint64_t effective_min_size =
+      min_size == 0 ? 1ULL * 1024ULL * 1024ULL : min_size;
+  const uint32_t max_groups = std::clamp<uint32_t>(requested_max_groups, 1, 1000);
+  const uint32_t max_files_per_group =
+      std::clamp<uint32_t>(requested_max_files_per_group, 2, 400);
+
+  const std::vector<DuplicateGroupRow> groups = find_duplicates_internal(
+      effective_min_size, max_groups, max_files_per_group);
+  const bool cancelled = IsDuplicateScanCancelRequested();
+  g_duplicate_scan_running.store(false, std::memory_order_release);
+
+  if (cancelled) {
+    g_duplicate_cancel_requested.store(false, std::memory_order_release);
+    SetLastErrorText("Duplicate scan cancelled.");
+    return nullptr;
+  }
+
+  const std::string json = DuplicateGroupsToJson(groups);
+  char* out = HeapCopyString(json);
+  if (out == nullptr) {
+    SetLastErrorText("Failed to allocate duplicate results buffer.");
+  }
+  g_duplicate_cancel_requested.store(false, std::memory_order_release);
+  return out;
+}
+
+extern "C" __declspec(dllexport) bool omni_cancel_duplicate_scan() {
+  if (!g_duplicate_scan_running.load(std::memory_order_acquire)) {
+    return false;
+  }
+  g_duplicate_cancel_requested.store(true, std::memory_order_release);
+  return true;
+}
+
+extern "C" __declspec(dllexport) char* omni_duplicate_scan_status_json() {
+  const std::string json = DuplicateScanStatusToJson();
+  char* out = HeapCopyString(json);
+  if (out == nullptr) {
+    SetLastErrorText("Failed to allocate duplicate status buffer.");
+  }
+  return out;
+}
+
 extern "C" __declspec(dllexport) char* scan_mft(const char* drive_utf8) {
-  std::vector<IndexedFile> files;
+  ScanSnapshot snapshot;
   std::string error;
-  const bool ok = scan_mft_internal(NormalizeDriveLetter(drive_utf8), &files, &error);
+  const bool ok =
+      scan_mft_internal(NormalizeDriveLetter(drive_utf8), &snapshot, &error);
   if (!ok) {
     SetLastErrorText(error.empty() ? "scan_mft failed." : error);
     return nullptr;
   }
 
-  const std::string json = BasicFilesToJson(files);
+  const std::string json = BasicFilesToJson(snapshot.files);
   char* out = HeapCopyString(json);
   if (out == nullptr) {
     SetLastErrorText("Failed to allocate scan_mft result buffer.");

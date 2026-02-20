@@ -24,6 +24,31 @@ type SearchResult = {
   modifiedUnix: number;
 };
 
+type DuplicateFile = {
+  name: string;
+  path: string;
+  size: number;
+  createdUnix: number;
+  modifiedUnix: number;
+};
+
+type DuplicateGroup = {
+  groupId: string;
+  size: number;
+  totalBytes: number;
+  fileCount: number;
+  files: DuplicateFile[];
+};
+
+type DuplicateScanStatus = {
+  running: boolean;
+  cancelRequested: boolean;
+  scannedFiles: number;
+  totalFiles: number;
+  groupsFound: number;
+  progressPercent: number;
+};
+
 type DriveInfo = {
   letter: string;
   path: string;
@@ -41,7 +66,7 @@ type SocialLink = {
   icon: SocialIconName;
 };
 
-type ActiveTab = "search" | "about";
+type ActiveTab = "search" | "duplicates" | "about";
 type ResultViewTab = "all" | "apps" | "media" | "docs" | "archives";
 type ResultSortMode = "relevance" | "newest" | "largest" | "name";
 type ThemeMode = "dark" | "light";
@@ -219,6 +244,19 @@ function formatUnix(unixSeconds: number): string {
     return "-";
   }
   return date.toLocaleDateString();
+}
+
+function stripInvisibleText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
+function basenameFromPath(path: string): string {
+  const normalized = path.replace(/\//g, "\\");
+  const lastSlash = normalized.lastIndexOf("\\");
+  if (lastSlash < 0 || lastSlash + 1 >= normalized.length) {
+    return normalized.trim();
+  }
+  return normalized.slice(lastSlash + 1).trim();
 }
 
 function categoryFromExtension(extension: string): ResultViewTab {
@@ -412,6 +450,18 @@ function App() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("search");
+  const [duplicateMinSizeMb, setDuplicateMinSizeMb] = useState("50");
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
+  const [duplicatesLoading, setDuplicatesLoading] = useState(false);
+  const [duplicatesError, setDuplicatesError] = useState<string | null>(null);
+  const [duplicateScanStatus, setDuplicateScanStatus] = useState<DuplicateScanStatus>({
+    running: false,
+    cancelRequested: false,
+    scannedFiles: 0,
+    totalFiles: 0,
+    groupsFound: 0,
+    progressPercent: 0,
+  });
   const [resultView, setResultView] = useState<ResultViewTab>("all");
   const [resultSort, setResultSort] = useState<ResultSortMode>("relevance");
   const [showPreviews, setShowPreviews] = useState<boolean>(() => {
@@ -497,6 +547,23 @@ function App() {
     () => visibleResults.reduce((sum, result) => sum + result.size, 0),
     [visibleResults],
   );
+
+  const duplicateStats = useMemo(() => {
+    let totalFiles = 0;
+    let reclaimableBytes = 0;
+    let listedFiles = 0;
+    for (const group of duplicateGroups) {
+      totalFiles += group.fileCount;
+      listedFiles += group.files.length;
+      reclaimableBytes += Math.max(0, group.fileCount - 1) * group.size;
+    }
+    return {
+      groupCount: duplicateGroups.length,
+      totalFiles,
+      listedFiles,
+      reclaimableBytes,
+    };
+  }, [duplicateGroups]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", themeMode);
@@ -645,6 +712,48 @@ function App() {
   }, [selectedDrive]);
 
   useEffect(() => {
+    setDuplicateGroups([]);
+    setDuplicatesError(null);
+    setDuplicatesLoading(false);
+    setDuplicateScanStatus({
+      running: false,
+      cancelRequested: false,
+      scannedFiles: 0,
+      totalFiles: 0,
+      groupsFound: 0,
+      progressPercent: 0,
+    });
+  }, [selectedDrive]);
+
+  useEffect(() => {
+    if (!duplicatesLoading) {
+      return;
+    }
+
+    let active = true;
+    const pollStatus = async () => {
+      try {
+        const next = await invoke<DuplicateScanStatus>("duplicate_scan_status");
+        if (active) {
+          setDuplicateScanStatus(next);
+        }
+      } catch {
+        // Best effort polling only; ignore intermittent status read errors.
+      }
+    };
+
+    void pollStatus();
+    const poll = window.setInterval(() => {
+      void pollStatus();
+    }, 220);
+
+    return () => {
+      active = false;
+      window.clearInterval(poll);
+    };
+  }, [duplicatesLoading]);
+
+  useEffect(() => {
     if (!trimmedQuery && !hasFilters) {
       setResults([]);
       setSearchError(null);
@@ -720,6 +829,88 @@ function App() {
     setCreatedBefore("");
   }
 
+  async function findDuplicates(): Promise<void> {
+    if (duplicatesLoading || duplicateScanStatus.running) {
+      return;
+    }
+
+    if (!status.ready) {
+      setDuplicatesError("Index is not ready yet. Wait for indexing to finish.");
+      return;
+    }
+
+    setDuplicateGroups([]);
+    setDuplicatesError(null);
+    setDuplicatesLoading(true);
+    setDuplicateScanStatus({
+      running: true,
+      cancelRequested: false,
+      scannedFiles: 0,
+      totalFiles: 0,
+      groupsFound: 0,
+      progressPercent: 0,
+    });
+    const minSize = toBytesFromMb(duplicateMinSizeMb) ?? 50 * 1024 * 1024;
+
+    try {
+      const groups = await invoke<DuplicateGroup[]>("find_duplicate_groups", {
+        min_size: minSize,
+        max_groups: 250,
+        max_files_per_group: 40,
+      });
+      setDuplicateGroups(groups);
+      setDuplicatesError(null);
+    } catch (error) {
+      setDuplicateGroups([]);
+      const message = String(error);
+      if (message.toLowerCase().includes("cancel")) {
+        setDuplicatesError("Duplicate scan cancelled.");
+      } else {
+        setDuplicatesError(message);
+      }
+    } finally {
+      try {
+        const finalStatus = await invoke<DuplicateScanStatus>("duplicate_scan_status");
+        setDuplicateScanStatus(finalStatus);
+      } catch {
+        setDuplicateScanStatus((previous) => ({
+          ...previous,
+          running: false,
+          cancelRequested: false,
+        }));
+      }
+      setDuplicatesLoading(false);
+    }
+  }
+
+  async function cancelDuplicateScan(): Promise<void> {
+    try {
+      const requested = await invoke<boolean>("cancel_duplicate_scan");
+      if (requested) {
+        setDuplicatesError(null);
+        setDuplicateScanStatus((previous) => ({
+          ...previous,
+          cancelRequested: true,
+        }));
+      }
+    } catch (error) {
+      setDuplicatesError(`Failed to cancel duplicate scan: ${String(error)}`);
+    }
+  }
+
+  function clearDuplicateResults(): void {
+    setDuplicateGroups([]);
+    setDuplicatesError(null);
+    setDuplicateScanStatus({
+      running: false,
+      cancelRequested: false,
+      scannedFiles: 0,
+      totalFiles: 0,
+      groupsFound: 0,
+      progressPercent: 0,
+    });
+  }
+
   async function revealResult(path: string): Promise<void> {
     try {
       await invoke("reveal_in_folder", { path });
@@ -788,6 +979,19 @@ function App() {
     : status.ready
       ? `Indexed ${status.indexedCount.toLocaleString()} files`
       : "Indexer idle";
+  const duplicateProgressPercent = Math.max(
+    0,
+    Math.min(100, Number.isFinite(duplicateScanStatus.progressPercent) ? duplicateScanStatus.progressPercent : 0),
+  );
+  const duplicateProgressLabel =
+    duplicateScanStatus.totalFiles > 0
+      ? `${duplicateScanStatus.scannedFiles.toLocaleString()} / ${duplicateScanStatus.totalFiles.toLocaleString()} files scanned`
+      : `${duplicateScanStatus.scannedFiles.toLocaleString()} files scanned`;
+  const showDuplicateProgress =
+    duplicatesLoading ||
+    duplicateScanStatus.running ||
+    duplicateScanStatus.cancelRequested ||
+    duplicateScanStatus.totalFiles > 0;
 
   return (
     <div className="app-shell">
@@ -842,6 +1046,15 @@ function App() {
             }}
           >
             Search
+          </button>
+          <button
+            type="button"
+            className={`tab ${activeTab === "duplicates" ? "is-active" : ""}`}
+            onClick={() => {
+              setActiveTab("duplicates");
+            }}
+          >
+            Duplicates
           </button>
           <button
             type="button"
@@ -1133,6 +1346,251 @@ function App() {
                       </div>
                     </li>
                   );
+                })}
+              </ul>
+            </section>
+          </section>
+        ) : null}
+
+        {activeTab === "duplicates" ? (
+          <section className="tab-panel" aria-label="Find duplicate files">
+            <div className="status-row">
+              <span
+                className={`status-dot ${status.indexing ? "live" : status.ready ? "ready" : "idle"}`}
+              />
+              <span>{statusText}</span>
+            </div>
+
+            {status.lastError ? <p className="error-row">{status.lastError}</p> : null}
+            {driveError ? <p className="error-row">{driveError}</p> : null}
+            {selectedDriveInfo && !selectedDriveInfo.canOpenVolume ? (
+              <p className="error-row">
+                The selected drive cannot be indexed without administrator privileges.
+              </p>
+            ) : null}
+
+            <section className="duplicate-controls">
+              <label className="duplicate-size-input">
+                <span>Min file size (MB)</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={duplicateMinSizeMb}
+                  onChange={(event) => setDuplicateMinSizeMb(event.currentTarget.value)}
+                  placeholder="50"
+                />
+              </label>
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={!status.ready || duplicatesLoading || duplicateScanStatus.running}
+                onClick={() => {
+                  void findDuplicates();
+                }}
+              >
+                {duplicatesLoading || duplicateScanStatus.running ? "Scanning..." : "Find duplicates"}
+              </button>
+              {duplicatesLoading || duplicateScanStatus.running ? (
+                <button
+                  type="button"
+                  className="ghost-button danger-ghost-button"
+                  disabled={duplicateScanStatus.cancelRequested}
+                  onClick={() => {
+                    void cancelDuplicateScan();
+                  }}
+                >
+                  {duplicateScanStatus.cancelRequested ? "Cancelling..." : "Cancel scan"}
+                </button>
+              ) : null}
+              {duplicateGroups.length > 0 && !duplicatesLoading && !duplicateScanStatus.running ? (
+                <button type="button" className="ghost-button" onClick={clearDuplicateResults}>
+                  Clear results
+                </button>
+              ) : null}
+            </section>
+
+            <section className="results-panel">
+              <div className="results-toolbar">
+                <div className="results-inline-stats" aria-live="polite">
+                  <span>{`${duplicateStats.groupCount.toLocaleString()} groups`}</span>
+                  <span>{`${duplicateStats.totalFiles.toLocaleString()} files`}</span>
+                  <span>{`Reclaimable ${formatBytes(duplicateStats.reclaimableBytes)}`}</span>
+                </div>
+              </div>
+
+              {showDuplicateProgress ? (
+                <div
+                  className={`duplicate-progress ${duplicateScanStatus.cancelRequested ? "is-cancelling" : ""}`}
+                  aria-live="polite"
+                >
+                  <div className="duplicate-progress-top">
+                    <span>
+                      {duplicateScanStatus.cancelRequested
+                        ? "Cancelling duplicate scan..."
+                        : duplicatesLoading || duplicateScanStatus.running
+                          ? "Scanning duplicate files..."
+                          : "Last duplicate scan"}
+                    </span>
+                    <strong>{`${duplicateProgressPercent.toFixed(1)}%`}</strong>
+                  </div>
+                  <div
+                    className="duplicate-progress-track"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(duplicateProgressPercent)}
+                  >
+                    <span
+                      className="duplicate-progress-fill"
+                      style={{ width: `${duplicateProgressPercent}%` }}
+                    />
+                  </div>
+                  <div className="duplicate-progress-meta">
+                    <span>{duplicateProgressLabel}</span>
+                    <span>{`${duplicateScanStatus.groupsFound.toLocaleString()} groups found`}</span>
+                  </div>
+                </div>
+              ) : null}
+
+              {duplicatesLoading ? <p className="hint compact-hint">Scanning for duplicates...</p> : null}
+              {duplicatesError ? <p className="error-row">{duplicatesError}</p> : null}
+              {!duplicatesLoading && !duplicatesError && duplicateGroups.length === 0 ? (
+                <p className="hint compact-hint">
+                  Run a duplicate scan to group files with identical content.
+                </p>
+              ) : null}
+
+              <ul className="results-list">
+                {duplicateGroups.flatMap((group, groupIndex) => {
+                  const hiddenCount = Math.max(0, group.fileCount - group.files.length);
+                  const renderedRows: ReactNode[] = [];
+                  renderedRows.push(
+                    <li key={`${group.groupId}:summary`} className="result-row duplicate-summary-row">
+                      <div className="result-icon duplicate-group-icon">DP</div>
+                      <div className="result-main duplicate-group-main">
+                        <span className="duplicate-group-label">Group</span>
+                        <strong>{`${group.fileCount.toLocaleString()} matching files`}</strong>
+                        <span>
+                          {hiddenCount > 0
+                            ? `${hiddenCount.toLocaleString()} files hidden for performance`
+                            : "All files in this group are shown"}
+                        </span>
+                      </div>
+                      <div className="result-meta">
+                        <span className="meta-chip">{`${formatBytes(group.size)} each`}</span>
+                        <span className="meta-chip">{`${formatBytes(group.totalBytes)} total`}</span>
+                        <span className="meta-chip">
+                          {`Reclaimable ${formatBytes(Math.max(0, group.fileCount - 1) * group.size)}`}
+                        </span>
+                      </div>
+                      <div className="result-actions" />
+                    </li>,
+                  );
+
+                  if (group.files.length === 0) {
+                    renderedRows.push(
+                      <li key={`${group.groupId}:empty`} className="result-row duplicate-empty-row">
+                        <div className="result-icon">--</div>
+                        <div className="result-main">
+                          <strong>No files available in this group</strong>
+                          <span>Try running scan again.</span>
+                        </div>
+                        <div className="result-meta" />
+                        <div className="result-actions" />
+                      </li>,
+                    );
+                  } else {
+                    for (let fileIndex = 0; fileIndex < group.files.length; fileIndex += 1) {
+                      const file = group.files[fileIndex];
+                      const cleanedPath = stripInvisibleText(file.path);
+                      const cleanedName = stripInvisibleText(file.name);
+                      const hasPath = cleanedPath.trim().length > 0;
+                      const filePath = hasPath ? cleanedPath.trim() : "(path unavailable)";
+                      const fileNameFromPath = hasPath ? basenameFromPath(cleanedPath) : "";
+                      const fileName =
+                        cleanedName.trim() || fileNameFromPath || "(unknown file name)";
+                      const rowKey = `${group.groupId}:${cleanedPath || cleanedName || fileIndex}`;
+
+                      renderedRows.push(
+                        <li
+                          key={rowKey}
+                          className="result-row clickable duplicate-file-row-flat"
+                          role="button"
+                          tabIndex={0}
+                          title="Click to reveal in folder, double-click to open"
+                          onClick={() => {
+                            if (hasPath) {
+                              void revealResult(cleanedPath);
+                            }
+                          }}
+                          onDoubleClick={() => {
+                            if (hasPath) {
+                              void openResult(cleanedPath);
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (!hasPath) {
+                              return;
+                            }
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void openResult(cleanedPath);
+                            } else if (event.key === " ") {
+                              event.preventDefault();
+                              void revealResult(cleanedPath);
+                            }
+                          }}
+                        >
+                          <div className="result-icon">DU</div>
+                          <div className="result-main">
+                            <strong title={fileName}>{fileName}</strong>
+                            <span title={filePath}>{filePath}</span>
+                          </div>
+                          <div className="result-meta">
+                            <span className="meta-chip">{formatBytes(file.size)}</span>
+                            <span className="meta-chip">{formatUnix(file.modifiedUnix)}</span>
+                          </div>
+                          <div className="result-actions">
+                            <button
+                              type="button"
+                              className="row-action"
+                              disabled={!hasPath}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (hasPath) {
+                                  void openResult(cleanedPath);
+                                }
+                              }}
+                            >
+                              Open
+                            </button>
+                            <button
+                              type="button"
+                              className="row-action"
+                              disabled={!hasPath}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (hasPath) {
+                                  void revealResult(cleanedPath);
+                                }
+                              }}
+                            >
+                              Folder
+                            </button>
+                          </div>
+                        </li>,
+                      );
+                    }
+                  }
+
+                  if (groupIndex < duplicateGroups.length - 1) {
+                    renderedRows.push(
+                      <li key={`${group.groupId}:divider`} className="duplicate-group-divider" />,
+                    );
+                  }
+
+                  return renderedRows;
                 })}
               </ul>
             </section>

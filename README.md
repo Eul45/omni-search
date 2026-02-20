@@ -1,27 +1,35 @@
 # OmniSearch
 
 High-performance Windows desktop file search built with Tauri v2, Rust, and C++.
-OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global search with advanced filters.
+OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global search with advanced filters and duplicate detection.
 
 <p align="center">
   <img src="src-tauri/icons/icon.png" width="200" alt="OmniSearch Logo">
 </p>
 
 <p align="center">
-  <img src="docs/images/image.png" width="600" alt="Smart Commit Screenshot">
+  <img src="docs/images/image.png" width="600" alt="OmniSearch Screenshot">
+</p>
+
+<p align="center">
+  <img src="docs/images/duplicates.png" width="600" alt="OmniSearch Duplicate Finder Showcase">
 </p>
 
 ![OmniSearch Architecture](docs/images/omnisearch-architecture.svg)
 
-
 ## Features
 
 - Native Windows indexing engine in C++ using `DeviceIoControl` + USN/MFT enumeration.
-- Rust FFI bridge exposing Tauri commands: `start_indexing`, `index_status`, `search_files`.
-- React + TypeScript "Spotlight-style" UI with non-blocking async search.
-- Filter support by extension, file size range, and created date range.
-- MSI installer output for distribution.
-- Windows manifest configured to request Administrator privileges (`requireAdministrator`) for raw volume access.
+- Live incremental index updates via USN journal watcher after initial scan.
+- Rust FFI bridge exposing Tauri commands for indexing, searching, duplicates, drive listing, and file actions.
+- Fast search UI with advanced filters: extension, file size range, created date range.
+- Duplicate finder with multithreaded hashing and grouped results (plus reclaimable size).
+- Duplicate scan controls: live progress %, scanned/total counters, groups found, and cancel support.
+- Drive picker with NTFS detection and volume access checks.
+- Result tools: open file, reveal in folder, previews (image/video/pdf), sort modes, and category tabs.
+- Light/dark theme toggle and separate Search / Duplicates / About tabs.
+- Installer targets via Tauri bundle (MSI and NSIS).
+- Windows manifest requests Administrator privileges (`requireAdministrator`) for raw volume access.
 
 ## Tech Stack
 
@@ -29,9 +37,9 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 - Desktop shell: Tauri v2
 - Bridge: Rust (`tauri`, `serde`, `cc`)
 - Native engine: C++ (Win32 API, NTFS USN/MFT)
-- Installer: WiX/MSI via Tauri bundle
+- Installer: WiX/MSI and NSIS via Tauri bundle
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```text
 omni-search/
@@ -60,10 +68,21 @@ omni-search/
 
 ## How It Works
 
-1. UI calls Tauri commands from React using `@tauri-apps/api`.
+1. React UI calls Tauri commands using `@tauri-apps/api`.
 2. Rust command layer forwards calls to C++ through `extern "C"` FFI.
-3. C++ scanner reads NTFS metadata via USN/MFT (`DeviceIoControl`).
-4. Search results are serialized to JSON and returned to the UI.
+3. C++ scanner reads NTFS metadata via USN/MFT (`DeviceIoControl`) and builds in-memory index state.
+4. Live USN watcher applies file changes after initial indexing to keep search current.
+5. Search and duplicate results are serialized to JSON and returned to the UI.
+
+## Main Commands (Tauri)
+
+- `start_indexing`, `index_status`
+- `search_files`
+- `find_duplicate_groups`, `duplicate_scan_status`, `cancel_duplicate_scan`
+- `list_drives`
+- `open_file`, `reveal_in_folder`
+- `open_external_url`
+- `load_preview_data_url`
 
 ## Requirements
 
@@ -100,7 +119,7 @@ npx tauri build -b msi
 
 Output path:
 
-- `src-tauri/target/release/bundle/msi/omni-search_0.1.0_x64_en-US.msi`
+- `src-tauri/target/release/bundle/msi/omni-search_<version>_x64_en-US.msi`
 
 Build EXE installer (NSIS):
 
@@ -135,13 +154,13 @@ Update visible app metadata in `src-tauri/tauri.conf.json`:
 - App still shows old icon:
   - Regenerate icons, run `cargo clean`, rebuild, and restart Explorer (Windows icon cache).
 
-
 ## Contributing
 
 1. Fork the repo.
 2. Create a feature branch.
 3. Run checks (`cargo check`, `npm run build`).
 4. Open a PR with test notes and benchmark notes if scanner logic changed.
+
 ## Star History
 
 <a href="https://www.star-history.com/#Eul45/omni-search&type=date&legend=top-left">
