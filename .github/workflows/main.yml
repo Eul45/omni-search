@@ -1,0 +1,35 @@
+name: Build MSI
+on: [push]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Tauri App (Generates MSI)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__ # This will be auto-replaced
+          releaseName: "OmniSearch v__VERSION__"
+          releaseBody: "Automated build from GitHub Actions"
+          releaseDraft: true
+          prerelease: false
+
+      - name: Upload MSI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: msi-installer
+          path: src-tauri/target/release/bundle/msi/*.msi
