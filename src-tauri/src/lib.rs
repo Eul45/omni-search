@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use tauri_plugin_opener::OpenerExt;
 use base64::Engine;
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +22,7 @@ struct SearchResult {
     size: u64,
     created_unix: i64,
     modified_unix: i64,
+    is_directory: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -68,7 +69,11 @@ struct DriveInfo {
 
 #[cfg(target_os = "windows")]
 unsafe extern "C" {
-    fn omni_start_indexing(drive_utf8: *const c_char) -> bool;
+    fn omni_start_indexing(
+        drive_utf8: *const c_char,
+        include_directories: bool,
+        scan_all_drives: bool,
+    ) -> bool;
     fn omni_is_indexing() -> bool;
     fn omni_is_index_ready() -> bool;
     fn omni_indexed_file_count() -> u64;
@@ -136,13 +141,22 @@ fn current_status() -> IndexStatus {
 }
 
 #[tauri::command]
-fn start_indexing(drive: Option<String>) -> Result<IndexStatus, String> {
+fn start_indexing(
+    drive: Option<String>,
+    include_folders: Option<bool>,
+    #[allow(non_snake_case)] includeFolders: Option<bool>,
+    include_all_drives: Option<bool>,
+    #[allow(non_snake_case)] includeAllDrives: Option<bool>,
+) -> Result<IndexStatus, String> {
     #[cfg(target_os = "windows")]
     {
         let drive = drive.unwrap_or_else(|| "C".to_string());
+        let include_folders = include_folders.or(includeFolders).unwrap_or(false);
+        let include_all_drives = include_all_drives.or(includeAllDrives).unwrap_or(false);
         let c_drive = CString::new(drive).map_err(|_| "Invalid drive parameter".to_string())?;
         // SAFETY: `c_drive` lives long enough for this synchronous call.
-        let started = unsafe { omni_start_indexing(c_drive.as_ptr()) };
+        let started =
+            unsafe { omni_start_indexing(c_drive.as_ptr(), include_folders, include_all_drives) };
         if !started {
             return Err(read_last_error().unwrap_or_else(|| "Failed to start indexing".to_string()));
         }
@@ -151,7 +165,13 @@ fn start_indexing(drive: Option<String>) -> Result<IndexStatus, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = drive;
+        let _ = (
+            drive,
+            include_folders,
+            includeFolders,
+            include_all_drives,
+            includeAllDrives,
+        );
         Err("OmniSearch scanner is only supported on Windows.".to_string())
     }
 }
