@@ -43,6 +43,7 @@ struct IndexedFile {
   std::wstring name;
   std::wstring path;
   std::wstring extension_lower;
+  bool is_directory;
 };
 
 struct ScanSnapshot {
@@ -62,6 +63,7 @@ struct SearchRow {
   uint64_t size;
   int64_t created_unix;
   int64_t modified_unix;
+  bool is_directory;
 };
 
 struct DuplicateFileRow {
@@ -98,6 +100,9 @@ std::wstring g_root_path;
 std::atomic<bool> g_is_indexing{false};
 std::atomic<bool> g_is_ready{false};
 std::atomic<uint64_t> g_indexed_count{0};
+std::atomic<bool> g_include_directories{false};
+std::atomic<bool> g_scan_all_drives_mode{false};
+std::atomic<uint64_t> g_indexing_request_token{0};
 std::atomic<uint64_t> g_live_watcher_token{0};
 std::atomic<bool> g_duplicate_scan_running{false};
 std::atomic<bool> g_duplicate_cancel_requested{false};
@@ -106,6 +111,8 @@ std::atomic<uint64_t> g_duplicate_progress_total{0};
 std::atomic<uint64_t> g_duplicate_groups_found{0};
 std::mutex g_error_mutex;
 std::string g_last_error;
+
+std::vector<DriveInfo> list_drives_internal();
 
 void SetLastErrorText(const std::string& error) {
   std::lock_guard<std::mutex> lock(g_error_mutex);
@@ -214,6 +221,13 @@ void StopLiveWatcher() {
   g_live_watcher_token.fetch_add(1, std::memory_order_acq_rel);
 }
 
+bool IsIndexingCancelled(const uint64_t request_token) {
+  if (request_token == 0) {
+    return false;
+  }
+  return g_indexing_request_token.load(std::memory_order_acquire) != request_token;
+}
+
 bool IsDuplicateScanCancelRequested() {
   return g_duplicate_cancel_requested.load(std::memory_order_acquire);
 }
@@ -297,6 +311,19 @@ std::wstring NormalizeExtensionFilter(const char* extension_utf8) {
     normalized.erase(normalized.begin());
   }
   return normalized;
+}
+
+wchar_t DriveBucketKeyFromPath(const std::wstring& path) {
+  if (path.size() >= 2 && path[1] == L':') {
+    const wchar_t drive = static_cast<wchar_t>(std::towupper(path[0]));
+    if (drive >= L'A' && drive <= L'Z') {
+      return drive;
+    }
+  }
+  if (path.rfind(L"\\\\", 0) == 0) {
+    return L'#';
+  }
+  return L'?';
 }
 
 int64_t FileTimeToUnixSeconds(const FILETIME& file_time) {
@@ -389,7 +416,7 @@ void AppendEscapedJsonString(std::string* out, const std::string& value) {
 
 std::string SearchRowsToJson(const std::vector<SearchRow>& rows) {
   std::string json;
-  json.reserve(rows.size() * 160);
+  json.reserve(rows.size() * 176);
   json.push_back('[');
   for (size_t i = 0; i < rows.size(); ++i) {
     if (i > 0) {
@@ -407,6 +434,8 @@ std::string SearchRowsToJson(const std::vector<SearchRow>& rows) {
     json.append(std::to_string(rows[i].created_unix));
     json.append(",\"modifiedUnix\":");
     json.append(std::to_string(rows[i].modified_unix));
+    json.append(",\"isDirectory\":");
+    json.append(rows[i].is_directory ? "true" : "false");
     json.push_back('}');
   }
   json.push_back(']');
@@ -482,7 +511,7 @@ std::string DriveRowsToJson(const std::vector<DriveInfo>& rows) {
 
 std::string BasicFilesToJson(const std::vector<IndexedFile>& files) {
   std::string json;
-  json.reserve(files.size() * 96);
+  json.reserve(files.size() * 112);
   json.push_back('[');
   for (size_t i = 0; i < files.size(); ++i) {
     if (i > 0) {
@@ -492,7 +521,9 @@ std::string BasicFilesToJson(const std::vector<IndexedFile>& files) {
     AppendEscapedJsonString(&json, WideToUtf8(files[i].name));
     json.append("\",\"path\":\"");
     AppendEscapedJsonString(&json, WideToUtf8(files[i].path));
-    json.append("\"}");
+    json.append("\",\"isDirectory\":");
+    json.append(files[i].is_directory ? "true" : "false");
+    json.push_back('}');
   }
   json.push_back(']');
   return json;
@@ -691,8 +722,14 @@ void RemoveIndexedFileByFrnLocked(const uint64_t frn) {
 }
 
 void UpsertIndexedFileLocked(const uint64_t frn, const std::wstring& name,
-                             std::wstring full_path) {
-  IndexedFile next_file{frn, name, std::move(full_path), ExtractExtensionLower(name)};
+                             std::wstring full_path, const bool is_directory) {
+  IndexedFile next_file{
+      frn,
+      name,
+      std::move(full_path),
+      is_directory ? L"" : ExtractExtensionLower(name),
+      is_directory,
+  };
   const auto position_it = g_file_position_by_frn.find(frn);
   if (position_it == g_file_position_by_frn.end()) {
     g_file_position_by_frn.emplace(frn, g_indexed_files.size());
@@ -717,11 +754,13 @@ void RebuildIndexedFilesFromNodesLocked() {
   path_cache.reserve(g_nodes.size() / 2 + 1);
   path_cache[g_root_frn] = g_root_path;
   std::unordered_set<uint64_t> resolving;
+  const bool include_directories =
+      g_include_directories.load(std::memory_order_acquire);
 
   for (const auto& pair : g_nodes) {
     const uint64_t frn = pair.first;
     const NodeEntry& node = pair.second;
-    if (node.is_directory || node.name.empty()) {
+    if (node.name.empty() || (node.is_directory && !include_directories)) {
       continue;
     }
 
@@ -734,8 +773,13 @@ void RebuildIndexedFilesFromNodesLocked() {
     }
 
     g_file_position_by_frn.emplace(frn, g_indexed_files.size());
-    g_indexed_files.push_back(
-        IndexedFile{frn, node.name, std::move(full_path), ExtractExtensionLower(node.name)});
+    g_indexed_files.push_back(IndexedFile{
+        frn,
+        node.name,
+        std::move(full_path),
+        node.is_directory ? L"" : ExtractExtensionLower(node.name),
+        node.is_directory,
+    });
   }
 }
 
@@ -745,6 +789,8 @@ void ApplyUsnBatchLocked(const std::vector<RawUsnEntry>& entries) {
   }
 
   bool requires_full_rebuild = false;
+  const bool include_directories =
+      g_include_directories.load(std::memory_order_acquire);
   std::unordered_map<uint64_t, std::wstring> path_cache;
   path_cache.reserve(entries.size() * 2 + 8);
   path_cache[g_root_frn] = g_root_path;
@@ -782,11 +828,25 @@ void ApplyUsnBatchLocked(const std::vector<RawUsnEntry>& entries) {
     g_nodes[entry.frn] = NodeEntry{entry.parent_frn, entry.name, entry.is_directory};
 
     if (entry.is_directory) {
-      RemoveIndexedFileByFrnLocked(entry.frn);
       if (!had_old_node || !old_node.is_directory ||
           old_node.parent_frn != entry.parent_frn || old_node.name != entry.name) {
         requires_full_rebuild = true;
       }
+      if (!include_directories) {
+        RemoveIndexedFileByFrnLocked(entry.frn);
+        continue;
+      }
+
+      resolving.clear();
+      std::wstring full_path;
+      const bool resolved = ResolvePathForFrn(entry.frn, g_root_frn, g_root_path, g_nodes,
+                                              &path_cache, &resolving, &full_path);
+      if (!resolved || full_path.empty()) {
+        RemoveIndexedFileByFrnLocked(entry.frn);
+        continue;
+      }
+
+      UpsertIndexedFileLocked(entry.frn, entry.name, std::move(full_path), true);
       continue;
     }
 
@@ -799,7 +859,7 @@ void ApplyUsnBatchLocked(const std::vector<RawUsnEntry>& entries) {
       continue;
     }
 
-    UpsertIndexedFileLocked(entry.frn, entry.name, std::move(full_path));
+    UpsertIndexedFileLocked(entry.frn, entry.name, std::move(full_path), false);
   }
 
   if (requires_full_rebuild) {
@@ -814,6 +874,14 @@ void ApplyScanSnapshotLocked(ScanSnapshot* snapshot) {
   g_nodes = std::move(snapshot->nodes);
   g_root_frn = snapshot->root_frn;
   g_root_path = std::move(snapshot->root_path);
+  RebuildFilePositionLookupLocked();
+}
+
+void ApplyIndexedFilesOnlyLocked(std::vector<IndexedFile> files) {
+  g_indexed_files = std::move(files);
+  g_nodes.clear();
+  g_root_frn = 0;
+  g_root_path.clear();
   RebuildFilePositionLookupLocked();
 }
 
@@ -1126,6 +1194,10 @@ std::vector<DuplicateGroupRow> find_duplicates_internal(const uint64_t min_size,
           return;
         }
         const IndexedFile& file = indexed_snapshot[index];
+        if (file.is_directory) {
+          AddDuplicateProgressDone(1);
+          continue;
+        }
         uint64_t size = 0;
         int64_t created = 0;
         int64_t modified = 0;
@@ -1324,7 +1396,9 @@ duplicate_finish:
 }
 
 bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snapshot,
-                       std::string* out_error) {
+                       const bool include_directories, const uint64_t request_token,
+                       bool* out_cancelled, std::string* out_error) {
+  *out_cancelled = false;
   out_snapshot->files.clear();
   out_snapshot->nodes.clear();
   out_snapshot->root_frn = 0;
@@ -1390,6 +1464,12 @@ bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snaps
   uint64_t discovered_files = 0;
 
   while (true) {
+    if (IsIndexingCancelled(request_token)) {
+      CloseHandle(volume);
+      *out_cancelled = true;
+      return false;
+    }
+
     DWORD returned = 0;
     const BOOL ok =
         DeviceIoControl(volume, FSCTL_ENUM_USN_DATA, &enum_data, sizeof(enum_data),
@@ -1438,6 +1518,10 @@ bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snaps
   }
 
   CloseHandle(volume);
+  if (IsIndexingCancelled(request_token)) {
+    *out_cancelled = true;
+    return false;
+  }
   nodes[root_frn] = NodeEntry{root_frn, L"", true};
 
   std::unordered_map<uint64_t, std::wstring> path_cache;
@@ -1448,9 +1532,13 @@ bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snaps
   files.reserve(nodes.size() / 2 + 1);
 
   for (const auto& pair : nodes) {
+    if (IsIndexingCancelled(request_token)) {
+      *out_cancelled = true;
+      return false;
+    }
     const uint64_t frn = pair.first;
     const NodeEntry& node = pair.second;
-    if (node.is_directory || node.name.empty()) {
+    if (node.name.empty() || (node.is_directory && !include_directories)) {
       continue;
     }
     resolving.clear();
@@ -1460,8 +1548,13 @@ bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snaps
     if (!resolved || full_path.empty()) {
       continue;
     }
-    files.push_back(IndexedFile{frn, node.name, std::move(full_path),
-                                ExtractExtensionLower(node.name)});
+    files.push_back(IndexedFile{
+        frn,
+        node.name,
+        std::move(full_path),
+        node.is_directory ? L"" : ExtractExtensionLower(node.name),
+        node.is_directory,
+    });
   }
 
   out_snapshot->files = std::move(files);
@@ -1623,45 +1716,146 @@ std::vector<DriveInfo> list_drives_internal() {
   return rows;
 }
 
-}  // namespace
-
-extern "C" __declspec(dllexport) bool omni_start_indexing(const char* drive_utf8) {
-  const bool already_indexing =
-      g_is_indexing.exchange(true, std::memory_order_acq_rel);
-  if (already_indexing) {
-    SetLastErrorText("Indexing is already running.");
-    return false;
+std::vector<std::wstring> ResolveTargetDrivesForIndexing(
+    const std::wstring& preferred_drive, const bool scan_all_drives) {
+  if (!scan_all_drives) {
+    return {preferred_drive};
   }
 
+  std::vector<std::wstring> drives;
+  const std::vector<DriveInfo> rows = list_drives_internal();
+  drives.reserve(rows.size());
+  for (const DriveInfo& row : rows) {
+    if (!row.is_ntfs || !row.can_open_volume) {
+      continue;
+    }
+    drives.push_back(row.letter);
+  }
+
+  if (drives.empty()) {
+    drives.push_back(preferred_drive);
+  }
+  return drives;
+}
+
+}  // namespace
+
+extern "C" __declspec(dllexport) bool omni_start_indexing(
+    const char* drive_utf8, const bool include_directories,
+    const bool scan_all_drives) {
+  const uint64_t request_token =
+      g_indexing_request_token.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+  g_is_indexing.store(true, std::memory_order_release);
   g_is_ready.store(false, std::memory_order_release);
   g_indexed_count.store(0, std::memory_order_release);
   SetLastErrorText("");
   StopLiveWatcher();
   const std::wstring drive_letter = NormalizeDriveLetter(drive_utf8);
+  g_include_directories.store(include_directories, std::memory_order_release);
+  g_scan_all_drives_mode.store(scan_all_drives, std::memory_order_release);
 
-  std::thread([drive_letter]() {
-    ScanSnapshot snapshot;
-    std::string error;
-    const bool ok = scan_mft_internal(drive_letter, &snapshot, &error);
-    if (ok) {
-      const uint64_t indexed_count = static_cast<uint64_t>(snapshot.files.size());
-      {
-        std::unique_lock<std::shared_mutex> lock(g_index_mutex);
-        ApplyScanSnapshotLocked(&snapshot);
-      }
-      g_indexed_count.store(indexed_count, std::memory_order_release);
-      g_is_ready.store(true, std::memory_order_release);
-      SetLastErrorText("");
-      if (snapshot.live_updates_supported) {
-        StartLiveUsnWatcher(drive_letter, snapshot.journal_id,
-                            snapshot.journal_next_usn);
-      }
-    } else {
-      g_is_ready.store(false, std::memory_order_release);
-      g_indexed_count.store(0, std::memory_order_release);
-      SetLastErrorText(error.empty() ? "Unknown indexing error." : error);
-    }
-    g_is_indexing.store(false, std::memory_order_release);
+  std::thread(
+      [drive_letter, include_directories, scan_all_drives, request_token]() {
+        if (scan_all_drives) {
+          const std::vector<std::wstring> target_drives =
+              ResolveTargetDrivesForIndexing(drive_letter, true);
+          std::vector<IndexedFile> merged_files;
+          merged_files.reserve(300000);
+          std::string combined_error;
+          bool has_success = false;
+
+          for (const std::wstring& target_drive : target_drives) {
+            if (IsIndexingCancelled(request_token)) {
+              return;
+            }
+
+            ScanSnapshot snapshot;
+            std::string error;
+            bool cancelled = false;
+            const bool ok = scan_mft_internal(target_drive, &snapshot, include_directories,
+                                              request_token, &cancelled, &error);
+            if (cancelled || IsIndexingCancelled(request_token)) {
+              return;
+            }
+
+            if (!ok) {
+              if (!error.empty()) {
+                if (!combined_error.empty()) {
+                  combined_error.append(" | ");
+                }
+                combined_error.append(WideToUtf8(target_drive));
+                combined_error.append(": ");
+                combined_error.append(error);
+              }
+              continue;
+            }
+
+            has_success = true;
+            for (IndexedFile& file : snapshot.files) {
+              merged_files.push_back(std::move(file));
+            }
+            g_indexed_count.store(static_cast<uint64_t>(merged_files.size()),
+                                  std::memory_order_release);
+          }
+
+          if (IsIndexingCancelled(request_token)) {
+            return;
+          }
+
+          if (!has_success) {
+            g_is_ready.store(false, std::memory_order_release);
+            g_indexed_count.store(0, std::memory_order_release);
+            SetLastErrorText(combined_error.empty() ? "Unknown indexing error."
+                                                    : combined_error);
+          } else {
+            const uint64_t indexed_count = static_cast<uint64_t>(merged_files.size());
+            {
+              std::unique_lock<std::shared_mutex> lock(g_index_mutex);
+              ApplyIndexedFilesOnlyLocked(std::move(merged_files));
+            }
+            g_indexed_count.store(indexed_count, std::memory_order_release);
+            g_is_ready.store(true, std::memory_order_release);
+            SetLastErrorText("");
+          }
+
+          if (!IsIndexingCancelled(request_token)) {
+            g_is_indexing.store(false, std::memory_order_release);
+          }
+          return;
+        }
+
+        ScanSnapshot snapshot;
+        std::string error;
+        bool cancelled = false;
+        const bool ok = scan_mft_internal(drive_letter, &snapshot, include_directories,
+                                          request_token, &cancelled, &error);
+        if (cancelled || IsIndexingCancelled(request_token)) {
+          return;
+        }
+
+        if (ok) {
+          const uint64_t indexed_count = static_cast<uint64_t>(snapshot.files.size());
+          {
+            std::unique_lock<std::shared_mutex> lock(g_index_mutex);
+            ApplyScanSnapshotLocked(&snapshot);
+          }
+          g_indexed_count.store(indexed_count, std::memory_order_release);
+          g_is_ready.store(true, std::memory_order_release);
+          SetLastErrorText("");
+          if (snapshot.live_updates_supported) {
+            StartLiveUsnWatcher(drive_letter, snapshot.journal_id,
+                                snapshot.journal_next_usn);
+          }
+        } else {
+          g_is_ready.store(false, std::memory_order_release);
+          g_indexed_count.store(0, std::memory_order_release);
+          SetLastErrorText(error.empty() ? "Unknown indexing error." : error);
+        }
+
+        if (!IsIndexingCancelled(request_token)) {
+          g_is_indexing.store(false, std::memory_order_release);
+        }
   }).detach();
 
   return true;
@@ -1705,15 +1899,27 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
       ToLower(Utf8ToWide(query_utf8 == nullptr ? "" : query_utf8));
   const std::wstring extension_filter = NormalizeExtensionFilter(extension_utf8);
   const bool has_extension_filter = !extension_filter.empty();
+  const bool extension_targets_directories =
+      extension_filter == L"folder" || extension_filter == L"folders" ||
+      extension_filter == L"dir" || extension_filter == L"directory";
   const bool has_size_filter =
       min_size > 0 || max_size < std::numeric_limits<uint64_t>::max();
   const bool has_date_filter =
       min_created_unix > std::numeric_limits<int64_t>::min() ||
       max_created_unix < std::numeric_limits<int64_t>::max();
   const bool requires_metadata = has_size_filter || has_date_filter;
+  const bool distribute_across_drives =
+      g_scan_all_drives_mode.load(std::memory_order_acquire) && limit > 1 &&
+      query.empty() && (has_extension_filter || has_size_filter || has_date_filter);
 
   std::vector<SearchRow> rows;
   rows.reserve(limit);
+  std::unordered_map<wchar_t, std::vector<SearchRow>> drive_buckets;
+  std::vector<wchar_t> drive_order;
+  if (distribute_across_drives) {
+    drive_buckets.reserve(16);
+    drive_order.reserve(16);
+  }
 
   {
     std::shared_lock<std::shared_mutex> lock(g_index_mutex);
@@ -1721,8 +1927,14 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
       if (!ContainsCaseInsensitive(file.path, query)) {
         continue;
       }
-      if (has_extension_filter && file.extension_lower != extension_filter) {
-        continue;
+      if (has_extension_filter) {
+        if (extension_targets_directories) {
+          if (!file.is_directory) {
+            continue;
+          }
+        } else if (file.is_directory || file.extension_lower != extension_filter) {
+          continue;
+        }
       }
 
       uint64_t size = 0;
@@ -1753,10 +1965,53 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
         modified = 0;
       }
 
-      rows.push_back(SearchRow{file.name, file.path, file.extension_lower, size, created,
-                               modified});
-      if (rows.size() >= limit) {
-        break;
+      SearchRow row{
+          file.name,
+          file.path,
+          file.extension_lower,
+          size,
+          created,
+          modified,
+          file.is_directory,
+      };
+
+      if (distribute_across_drives) {
+        const wchar_t bucket_key = DriveBucketKeyFromPath(file.path);
+        auto bucket_it = drive_buckets.find(bucket_key);
+        if (bucket_it == drive_buckets.end()) {
+          drive_order.push_back(bucket_key);
+          bucket_it = drive_buckets.emplace(bucket_key, std::vector<SearchRow>{}).first;
+          bucket_it->second.reserve(128);
+        }
+        bucket_it->second.push_back(std::move(row));
+      } else {
+        rows.push_back(std::move(row));
+        if (rows.size() >= limit) {
+          break;
+        }
+      }
+    }
+  }
+
+  if (distribute_across_drives) {
+    rows.clear();
+    rows.reserve(limit);
+    std::vector<size_t> bucket_offsets(drive_order.size(), 0);
+    bool appended = true;
+    while (rows.size() < limit && appended) {
+      appended = false;
+      for (size_t i = 0; i < drive_order.size(); ++i) {
+        std::vector<SearchRow>& bucket = drive_buckets[drive_order[i]];
+        size_t& offset = bucket_offsets[i];
+        if (offset >= bucket.size()) {
+          continue;
+        }
+        rows.push_back(std::move(bucket[offset]));
+        ++offset;
+        appended = true;
+        if (rows.size() >= limit) {
+          break;
+        }
       }
     }
   }
@@ -1832,8 +2087,9 @@ extern "C" __declspec(dllexport) char* omni_duplicate_scan_status_json() {
 extern "C" __declspec(dllexport) char* scan_mft(const char* drive_utf8) {
   ScanSnapshot snapshot;
   std::string error;
-  const bool ok =
-      scan_mft_internal(NormalizeDriveLetter(drive_utf8), &snapshot, &error);
+  bool cancelled = false;
+  const bool ok = scan_mft_internal(
+      NormalizeDriveLetter(drive_utf8), &snapshot, false, 0, &cancelled, &error);
   if (!ok) {
     SetLastErrorText(error.empty() ? "scan_mft failed." : error);
     return nullptr;

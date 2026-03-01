@@ -1,0 +1,23 @@
+"filename", "language", "JSON with Comments", "JSON", "TypeScript", "PostCSS", "TypeScript JSX", "Markdown", "Rust", "XML", "HTML", "C++", "comment", "blank", "total"
+"e:\omni-search\PRIVACY.md", "Markdown", 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 18, 42
+"e:\omni-search\README.md", "Markdown", 0, 0, 0, 0, 0, 139, 0, 0, 0, 0, 0, 42, 181
+"e:\omni-search\docs\images\README.md", "Markdown", 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 2, 6
+"e:\omni-search\docs\images\omnisearch-architecture.svg", "XML", 0, 0, 0, 0, 0, 0, 0, 44, 0, 0, 0, 8, 52
+"e:\omni-search\index.html", "HTML", 0, 0, 0, 0, 0, 0, 0, 0, 13, 0, 0, 2, 15
+"e:\omni-search\package-lock.json", "JSON", 0, 2056, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2057
+"e:\omni-search\package.json", "JSON", 0, 26, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 27
+"e:\omni-search\src-tauri\build.rs", "Rust", 0, 0, 0, 0, 0, 0, 19, 0, 0, 0, 0, 4, 23
+"e:\omni-search\src-tauri\capabilities\default.json", "JSON", 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 12
+"e:\omni-search\src-tauri\cpp\scanner.cpp", "C++", 0, 0, 0, 0, 0, 0, 0, 0, 0, 1872, 4, 235, 2111
+"e:\omni-search\src-tauri\src\lib.rs", "Rust", 0, 0, 0, 0, 0, 0, 434, 0, 0, 0, 19, 53, 506
+"e:\omni-search\src-tauri\src\main.rs", "Rust", 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1, 2, 7
+"e:\omni-search\src-tauri\tauri.conf.json", "JSON", 0, 80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 81
+"e:\omni-search\src-tauri\windows-app-manifest.xml", "XML", 0, 0, 0, 0, 0, 0, 0, 28, 0, 0, 0, 1, 29
+"e:\omni-search\src\App.css", "PostCSS", 0, 0, 0, 1402, 0, 0, 0, 0, 0, 0, 0, 222, 1624
+"e:\omni-search\src\App.tsx", "TypeScript JSX", 0, 0, 0, 0, 1806, 0, 0, 0, 0, 0, 2, 142, 1950
+"e:\omni-search\src\main.tsx", "TypeScript JSX", 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 2, 10
+"e:\omni-search\src\vite-env.d.ts", "TypeScript", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2
+"e:\omni-search\tsconfig.json", "JSON with Comments", 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 26
+"e:\omni-search\tsconfig.node.json", "JSON", 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 11
+"e:\omni-search\vite.config.ts", "TypeScript", 0, 0, 22, 0, 0, 0, 0, 0, 0, 0, 7, 4, 33
+"Total", "-", 21, 2183, 22, 1402, 1814, 167, 457, 72, 13, 1872, 36, 746, 8805

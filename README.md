@@ -20,6 +20,14 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
   <img src="docs/images/duplicates.png" width="84%" alt="OmniSearch Duplicate Finder Screenshot">
 </p>
 <p align="center"><em>Duplicate Finder groups identical files, shows reclaimable space, and supports progress + cancel.</em></p>
+<p align="center"><sub>──────────── · ────────────</sub></p>
+<p align="center">&nbsp;</p>
+
+<p align="center"><strong>Drive Scope & Advanced Settings</strong></p>
+<p align="center">
+  <img src="docs/images/all-drives.png" width="84%" alt="OmniSearch Drive Scope and Advanced Settings Screenshot">
+</p>
+<p align="center"><em>Optional all-drives indexing, include-folders toggle, and advanced result-limit controls.</em></p>
 
 <p align="center">
   <img src="docs/images/omnisearch-architecture.svg" width="92%" alt="OmniSearch Architecture">
@@ -34,6 +42,10 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 - Duplicate finder with multithreaded hashing and grouped results (plus reclaimable size).
 - Duplicate scan controls: live progress %, scanned/total counters, groups found, and cancel support.
 - Drive picker with NTFS detection and volume access checks.
+- Optional search scope toggle to scan all NTFS drives instead of only the selected drive.
+- Optional `Include folders` indexing mode so folder paths can appear in search results.
+- Advanced settings panel for configurable default search limit (persisted locally).
+- Incremental `Load more` results flow that expands by your configured default limit step.
 - Result tools: open file, reveal in folder, previews (image/video/pdf), sort modes, and category tabs.
 - Light/dark theme toggle and separate Search / Duplicates / About tabs.
 - Installer targets via Tauri bundle (MSI and NSIS).

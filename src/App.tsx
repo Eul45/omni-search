@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import "./App.css";
@@ -6,6 +6,8 @@ import "./App.css";
 const POLL_INTERVAL_MS = 700;
 const SEARCH_DEBOUNCE_MS = 130;
 const SEARCH_LIMIT = 200;
+const SEARCH_LIMIT_MIN = SEARCH_LIMIT;
+const SEARCH_LIMIT_MAX = 5000;
 const PREVIEW_PREFETCH_LIMIT = 40;
 
 type IndexStatus = {
@@ -22,6 +24,7 @@ type SearchResult = {
   size: number;
   createdUnix: number;
   modifiedUnix: number;
+  isDirectory: boolean;
 };
 
 type DuplicateFile = {
@@ -66,7 +69,7 @@ type SocialLink = {
   icon: SocialIconName;
 };
 
-type ActiveTab = "search" | "duplicates" | "about";
+type ActiveTab = "search" | "duplicates" | "advanced" | "about";
 type ResultViewTab = "all" | "apps" | "media" | "docs" | "archives";
 type ResultSortMode = "relevance" | "newest" | "largest" | "name";
 type ThemeMode = "dark" | "light";
@@ -75,6 +78,9 @@ type PreviewKind = "image" | "video" | "pdf" | "none";
 const DEVELOPER_NAME = "Eyuel Engida";
 const THEME_STORAGE_KEY = "omnisearch_theme_mode";
 const PREVIEW_STORAGE_KEY = "omnisearch_show_previews";
+const INCLUDE_FOLDERS_STORAGE_KEY = "omnisearch_include_folders";
+const INCLUDE_ALL_DRIVES_STORAGE_KEY = "omnisearch_include_all_drives";
+const SEARCH_LIMIT_STORAGE_KEY = "omnisearch_search_limit";
 const RESULT_VIEW_TABS: Array<{ id: ResultViewTab; label: string }> = [
   { id: "all", label: "All" },
   { id: "apps", label: "Apps" },
@@ -199,6 +205,13 @@ function toBytesFromMb(value: string): number | undefined {
   return Math.floor(parsed * 1024 * 1024);
 }
 
+function normalizeSearchLimit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return SEARCH_LIMIT;
+  }
+  return Math.min(SEARCH_LIMIT_MAX, Math.max(SEARCH_LIMIT_MIN, Math.floor(value)));
+}
+
 function toUnixStart(dateValue: string): number | undefined {
   if (!dateValue) {
     return undefined;
@@ -284,6 +297,9 @@ function rowKeyForResult(result: SearchResult): string {
 }
 
 function normalizedExtension(result: SearchResult): string {
+  if (result.isDirectory) {
+    return "";
+  }
   const ext = result.extension.trim().replace(/^\./, "").toLowerCase();
   if (ext) {
     return ext;
@@ -296,6 +312,9 @@ function normalizedExtension(result: SearchResult): string {
 }
 
 function previewKindFromResult(result: SearchResult): PreviewKind {
+  if (result.isDirectory) {
+    return "none";
+  }
   const ext = normalizedExtension(result);
   if (!ext) {
     return "none";
@@ -436,6 +455,9 @@ function App() {
     indexedCount: 0,
     lastError: null,
   });
+  const [indexSyncing, setIndexSyncing] = useState(false);
+  const [appliedIndexConfigKey, setAppliedIndexConfigKey] = useState("");
+  const [pendingIndexConfigKey, setPendingIndexConfigKey] = useState("");
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [selectedDrive, setSelectedDrive] = useState("");
   const [driveError, setDriveError] = useState<string | null>(null);
@@ -477,9 +499,40 @@ function App() {
     }
     return true;
   });
+  const [includeFolders, setIncludeFolders] = useState<boolean>(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.localStorage.getItem(INCLUDE_FOLDERS_STORAGE_KEY) === "1";
+  });
+  const [includeAllDrives, setIncludeAllDrives] = useState<boolean>(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.localStorage.getItem(INCLUDE_ALL_DRIVES_STORAGE_KEY) === "1";
+  });
+  const [defaultSearchLimit, setDefaultSearchLimit] = useState<number>(() => {
+    if (typeof window === "undefined") {
+      return SEARCH_LIMIT;
+    }
+    const savedRaw = window.localStorage.getItem(SEARCH_LIMIT_STORAGE_KEY);
+    if (!savedRaw) {
+      return SEARCH_LIMIT;
+    }
+    const saved = Number(savedRaw);
+    return normalizeSearchLimit(saved);
+  });
+  const [searchLimit, setSearchLimit] = useState<number>(defaultSearchLimit);
+  const [searchLimitInput, setSearchLimitInput] = useState<string>(() =>
+    String(defaultSearchLimit),
+  );
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [previewSourceState, setPreviewSourceState] = useState<Record<string, number>>({});
   const [previewReadyState, setPreviewReadyState] = useState<Record<string, true>>({});
   const [previewDataUrls, setPreviewDataUrls] = useState<Record<string, string>>({});
+  const previousIndexedCountRef = useRef<number | null>(null);
+  const indexSyncTimeoutRef = useRef<number | null>(null);
 
   const hasFilters =
     extension.trim().length > 0 ||
@@ -490,6 +543,11 @@ function App() {
 
   const selectedDriveInfo = drives.find((drive) => drive.letter === selectedDrive);
   const trimmedQuery = query.trim();
+  const requestedIndexConfigKey = includeAllDrives
+    ? `ALL:${includeFolders ? "1" : "0"}`
+    : selectedDrive
+      ? `${selectedDrive}:${includeFolders ? "1" : "0"}`
+      : "";
 
   const resultCounts = useMemo<Record<ResultViewTab, number>>(() => {
     const counts: Record<ResultViewTab, number> = {
@@ -575,6 +633,26 @@ function App() {
   }, [showPreviews]);
 
   useEffect(() => {
+    window.localStorage.setItem(INCLUDE_FOLDERS_STORAGE_KEY, includeFolders ? "1" : "0");
+  }, [includeFolders]);
+
+  useEffect(() => {
+    window.localStorage.setItem(INCLUDE_ALL_DRIVES_STORAGE_KEY, includeAllDrives ? "1" : "0");
+  }, [includeAllDrives]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SEARCH_LIMIT_STORAGE_KEY, String(defaultSearchLimit));
+  }, [defaultSearchLimit]);
+
+  useEffect(() => {
+    setSearchLimitInput(String(defaultSearchLimit));
+  }, [defaultSearchLimit]);
+
+  useEffect(() => {
+    setSearchLimit(defaultSearchLimit);
+  }, [trimmedQuery, extension, minSizeMb, maxSizeMb, createdAfter, createdBefore, hasFilters, defaultSearchLimit]);
+
+  useEffect(() => {
     setPreviewSourceState({});
     setPreviewReadyState({});
     setPreviewDataUrls({});
@@ -642,6 +720,7 @@ function App() {
         }
         setDrives(available);
         const preferred =
+          available.find((drive) => drive.letter === "C" && drive.isNtfs && drive.canOpenVolume) ??
           available.find((drive) => drive.isNtfs && drive.canOpenVolume) ??
           available.find((drive) => drive.isNtfs) ??
           available[0];
@@ -687,13 +766,28 @@ function App() {
     if (!selectedDrive) {
       return;
     }
+    if (
+      requestedIndexConfigKey === appliedIndexConfigKey ||
+      requestedIndexConfigKey === pendingIndexConfigKey
+    ) {
+      return;
+    }
 
     let active = true;
+    setPendingIndexConfigKey(requestedIndexConfigKey);
     const beginIndexing = async () => {
       try {
-        const initial = await invoke<IndexStatus>("start_indexing", { drive: selectedDrive });
+        const initial = await invoke<IndexStatus>("start_indexing", {
+          drive: selectedDrive,
+          includeFolders: includeFolders,
+          include_folders: includeFolders,
+          includeAllDrives: includeAllDrives,
+          include_all_drives: includeAllDrives,
+        });
         if (active) {
           setStatus(initial);
+          setAppliedIndexConfigKey(requestedIndexConfigKey);
+          setPendingIndexConfigKey("");
         }
       } catch (error) {
         if (active) {
@@ -701,6 +795,7 @@ function App() {
             ...previous,
             lastError: String(error),
           }));
+          setPendingIndexConfigKey("");
         }
       }
     };
@@ -709,7 +804,14 @@ function App() {
     return () => {
       active = false;
     };
-  }, [selectedDrive]);
+  }, [
+    selectedDrive,
+    includeFolders,
+    includeAllDrives,
+    requestedIndexConfigKey,
+    appliedIndexConfigKey,
+    pendingIndexConfigKey,
+  ]);
 
   useEffect(() => {
     setDuplicateGroups([]);
@@ -723,7 +825,7 @@ function App() {
       groupsFound: 0,
       progressPercent: 0,
     });
-  }, [selectedDrive]);
+  }, [selectedDrive, includeFolders, includeAllDrives]);
 
   useEffect(() => {
     if (!duplicatesLoading) {
@@ -754,6 +856,43 @@ function App() {
   }, [duplicatesLoading]);
 
   useEffect(() => {
+    if (!status.ready) {
+      previousIndexedCountRef.current = status.indexedCount;
+      setIndexSyncing(false);
+      if (indexSyncTimeoutRef.current !== null) {
+        window.clearTimeout(indexSyncTimeoutRef.current);
+        indexSyncTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    const previousCount = previousIndexedCountRef.current;
+    if (
+      previousCount !== null &&
+      status.indexedCount !== previousCount &&
+      !status.indexing
+    ) {
+      setIndexSyncing(true);
+      if (indexSyncTimeoutRef.current !== null) {
+        window.clearTimeout(indexSyncTimeoutRef.current);
+      }
+      indexSyncTimeoutRef.current = window.setTimeout(() => {
+        setIndexSyncing(false);
+        indexSyncTimeoutRef.current = null;
+      }, 1600);
+    }
+    previousIndexedCountRef.current = status.indexedCount;
+  }, [status.ready, status.indexing, status.indexedCount]);
+
+  useEffect(() => {
+    return () => {
+      if (indexSyncTimeoutRef.current !== null) {
+        window.clearTimeout(indexSyncTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!trimmedQuery && !hasFilters) {
       setResults([]);
       setSearchError(null);
@@ -779,7 +918,7 @@ function App() {
             max_size: maxSize,
             min_created_unix: minCreatedUnix,
             max_created_unix: maxCreatedUnix,
-            limit: SEARCH_LIMIT,
+            limit: searchLimit,
           });
           if (active) {
             setResults(found);
@@ -804,20 +943,30 @@ function App() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [trimmedQuery, extension, minSizeMb, maxSizeMb, createdAfter, createdBefore, hasFilters]);
+  }, [trimmedQuery, extension, minSizeMb, maxSizeMb, createdAfter, createdBefore, hasFilters, searchLimit]);
 
   async function reindex(): Promise<void> {
     if (!selectedDrive) {
       return;
     }
     try {
-      const next = await invoke<IndexStatus>("start_indexing", { drive: selectedDrive });
+      setPendingIndexConfigKey(requestedIndexConfigKey);
+      const next = await invoke<IndexStatus>("start_indexing", {
+        drive: selectedDrive,
+        includeFolders: includeFolders,
+        include_folders: includeFolders,
+        includeAllDrives: includeAllDrives,
+        include_all_drives: includeAllDrives,
+      });
       setStatus(next);
+      setAppliedIndexConfigKey(requestedIndexConfigKey);
+      setPendingIndexConfigKey("");
     } catch (error) {
       setStatus((previous) => ({
         ...previous,
         lastError: String(error),
       }));
+      setPendingIndexConfigKey("");
     }
   }
 
@@ -827,6 +976,42 @@ function App() {
     setMaxSizeMb("");
     setCreatedAfter("");
     setCreatedBefore("");
+  }
+
+  function loadMoreResults(): void {
+    setSearchLimit((previous) =>
+      Math.min(SEARCH_LIMIT_MAX, previous + Math.max(defaultSearchLimit, SEARCH_LIMIT_MIN)),
+    );
+  }
+
+  function applySearchLimitPreference(): void {
+    const parsed = Number(searchLimitInput.trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setSettingsError(`Enter a valid number between ${SEARCH_LIMIT_MIN} and ${SEARCH_LIMIT_MAX}.`);
+      setSettingsMessage(null);
+      return;
+    }
+
+    const normalized = normalizeSearchLimit(parsed);
+    setDefaultSearchLimit(normalized);
+    setSearchLimit(normalized);
+    setSearchLimitInput(String(normalized));
+    setSettingsError(null);
+    if (normalized !== parsed) {
+      setSettingsMessage(
+        `Saved. Adjusted to ${normalized.toLocaleString()} to keep the allowed range.`,
+      );
+      return;
+    }
+    setSettingsMessage(`Saved. New searches now start with ${normalized.toLocaleString()} results.`);
+  }
+
+  function resetSearchLimitPreference(): void {
+    setDefaultSearchLimit(SEARCH_LIMIT);
+    setSearchLimit(SEARCH_LIMIT);
+    setSearchLimitInput(String(SEARCH_LIMIT));
+    setSettingsError(null);
+    setSettingsMessage(`Reset to default: ${SEARCH_LIMIT.toLocaleString()} results.`);
   }
 
   async function findDuplicates(): Promise<void> {
@@ -975,10 +1160,12 @@ function App() {
   }
 
   const statusText = status.indexing
-    ? `Indexing ${status.indexedCount.toLocaleString()} files...`
-    : status.ready
-      ? `Indexed ${status.indexedCount.toLocaleString()} files`
-      : "Indexer idle";
+    ? `Indexing ${status.indexedCount.toLocaleString()} items...`
+    : indexSyncing
+      ? `Syncing updates... Indexed ${status.indexedCount.toLocaleString()} items`
+      : status.ready
+        ? `Indexed ${status.indexedCount.toLocaleString()} items`
+        : "Indexer idle";
   const duplicateProgressPercent = Math.max(
     0,
     Math.min(100, Number.isFinite(duplicateScanStatus.progressPercent) ? duplicateScanStatus.progressPercent : 0),
@@ -992,6 +1179,14 @@ function App() {
     duplicateScanStatus.running ||
     duplicateScanStatus.cancelRequested ||
     duplicateScanStatus.totalFiles > 0;
+  const hasSearchRequest = Boolean(trimmedQuery || hasFilters);
+  const canLoadMore =
+    hasSearchRequest &&
+    !loading &&
+    !searchError &&
+    results.length > 0 &&
+    results.length >= searchLimit &&
+    searchLimit < SEARCH_LIMIT_MAX;
 
   return (
     <div className="app-shell">
@@ -1014,6 +1209,7 @@ function App() {
               <select
                 id="drive-picker"
                 value={selectedDrive}
+                disabled={includeAllDrives}
                 onChange={(event) => {
                   setSelectedDrive(event.currentTarget.value);
                 }}
@@ -1030,6 +1226,37 @@ function App() {
                     </option>
                   ))}
               </select>
+            </label>
+            <label
+              className="scan-switch"
+              htmlFor="all-drives-toggle"
+              title="Scan all NTFS drives before search. Uses more time and resources."
+            >
+              <input
+                id="all-drives-toggle"
+                type="checkbox"
+                checked={includeAllDrives}
+                onChange={(event) => {
+                  setIncludeAllDrives(event.currentTarget.checked);
+                }}
+              />
+              <span className="scan-switch-slider" aria-hidden="true" />
+              <span>Scan all drives</span>
+            </label>
+            <label
+              className="scan-option"
+              htmlFor="include-folders-toggle"
+              title="Include folders in index."
+            >
+              <input
+                id="include-folders-toggle"
+                type="checkbox"
+                checked={includeFolders}
+                onChange={(event) => {
+                  setIncludeFolders(event.currentTarget.checked);
+                }}
+              />
+              <span>Include folders</span>
             </label>
             <button type="button" className="ghost-button" onClick={reindex}>
               Reindex
@@ -1058,6 +1285,15 @@ function App() {
           </button>
           <button
             type="button"
+            className={`tab ${activeTab === "advanced" ? "is-active" : ""}`}
+            onClick={() => {
+              setActiveTab("advanced");
+            }}
+          >
+            Advanced
+          </button>
+          <button
+            type="button"
             className={`tab ${activeTab === "about" ? "is-active" : ""}`}
             onClick={() => {
               setActiveTab("about");
@@ -1071,7 +1307,9 @@ function App() {
           <section className="tab-panel" aria-label="Search files">
             <div className="status-row">
               <span
-                className={`status-dot ${status.indexing ? "live" : status.ready ? "ready" : "idle"}`}
+                className={`status-dot ${
+                  status.indexing || indexSyncing ? "live" : status.ready ? "ready" : "idle"
+                }`}
               />
               <span>{statusText}</span>
             </div>
@@ -1089,7 +1327,7 @@ function App() {
               type="text"
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="Type to search across indexed files..."
+              placeholder="Type to search across indexed items..."
               autoFocus
             />
 
@@ -1100,7 +1338,7 @@ function App() {
                   type="text"
                   value={extension}
                   onChange={(event) => setExtension(event.currentTarget.value)}
-                  placeholder=".mp4"
+                  placeholder=".mp4 or folder"
                 />
               </label>
               <label>
@@ -1168,6 +1406,7 @@ function App() {
                       {visibleResults.length !== results.length
                         ? ` / ${results.length.toLocaleString()}`
                         : ""}
+                      {` (limit ${searchLimit.toLocaleString()})`}
                     </span>
                     <span>{formatBytes(visibleTotalBytes)}</span>
                   </div>
@@ -1209,15 +1448,22 @@ function App() {
               {searchError ? <p className="error-row">{searchError}</p> : null}
               {actionError ? <p className="error-row">{actionError}</p> : null}
               {!loading && !searchError && visibleResults.length === 0 && (trimmedQuery || hasFilters) ? (
-                <p className="hint compact-hint">No files match the current filters.</p>
+                <p className="hint compact-hint">No items match the current filters.</p>
               ) : null}
 
               <ul className="results-list">
                 {visibleResults.map((result) => {
                   const rowKey = rowKeyForResult(result);
+                  const isDirectory = result.isDirectory;
                   const normalizedExt = normalizedExtension(result);
-                  const shortType = (normalizedExt || "file").slice(0, 2).toUpperCase();
-                  const extensionLabel = normalizedExt ? `.${normalizedExt}` : "file";
+                  const shortType = isDirectory
+                    ? "DIR"
+                    : (normalizedExt || "file").slice(0, 2).toUpperCase();
+                  const extensionLabel = isDirectory
+                    ? "folder"
+                    : normalizedExt
+                      ? `.${normalizedExt}`
+                      : "file";
                   const previewKind = showPreviews ? previewKindFromResult(result) : "none";
                   const previewSources =
                     previewKind !== "none"
@@ -1260,7 +1506,10 @@ function App() {
                       }}
                     >
                       {showPreviews ? (
-                        <div className={`result-preview ${previewKind}`} aria-hidden="true">
+                        <div
+                          className={`result-preview ${previewKind} ${isDirectory ? "folder" : ""}`}
+                          aria-hidden="true"
+                        >
                           <span className="preview-fallback">{shortType}</span>
                           {hasRenderablePreview && previewKind === "image" ? (
                             <img
@@ -1310,7 +1559,7 @@ function App() {
                           ) : null}
                         </div>
                       ) : (
-                        <div className="result-icon">{shortType}</div>
+                        <div className={`result-icon ${isDirectory ? "folder" : ""}`}>{shortType}</div>
                       )}
 
                       <div className="result-main">
@@ -1348,6 +1597,14 @@ function App() {
                   );
                 })}
               </ul>
+
+              {canLoadMore ? (
+                <div className="load-more-row">
+                  <button type="button" className="load-more-button" onClick={loadMoreResults}>
+                    {`Load more (+${defaultSearchLimit.toLocaleString()})`}
+                  </button>
+                </div>
+              ) : null}
             </section>
           </section>
         ) : null}
@@ -1356,7 +1613,9 @@ function App() {
           <section className="tab-panel" aria-label="Find duplicate files">
             <div className="status-row">
               <span
-                className={`status-dot ${status.indexing ? "live" : status.ready ? "ready" : "idle"}`}
+                className={`status-dot ${
+                  status.indexing || indexSyncing ? "live" : status.ready ? "ready" : "idle"
+                }`}
               />
               <span>{statusText}</span>
             </div>
@@ -1594,6 +1853,58 @@ function App() {
                 })}
               </ul>
             </section>
+          </section>
+        ) : null}
+
+        {activeTab === "advanced" ? (
+          <section className="tab-panel" aria-label="Advanced settings">
+            <div className="about-panel advanced-panel">
+              <div className="about-header">
+                <div>
+                  <h2>Advanced settings</h2>
+                  <p className="about-tagline">
+                    Control how many search results load at once.
+                  </p>
+                </div>
+              </div>
+
+              <div className="advanced-settings">
+                <label htmlFor="search-limit-input">
+                  Results per search (range {SEARCH_LIMIT_MIN} - {SEARCH_LIMIT_MAX})
+                </label>
+                <input
+                  id="search-limit-input"
+                  type="number"
+                  min={SEARCH_LIMIT_MIN}
+                  max={SEARCH_LIMIT_MAX}
+                  step="50"
+                  value={searchLimitInput}
+                  onChange={(event) => {
+                    setSearchLimitInput(event.currentTarget.value);
+                    if (settingsError) {
+                      setSettingsError(null);
+                    }
+                    if (settingsMessage) {
+                      setSettingsMessage(null);
+                    }
+                  }}
+                />
+                <div className="advanced-settings-actions">
+                  <button type="button" className="ghost-button" onClick={applySearchLimitPreference}>
+                    Update
+                  </button>
+                  <button type="button" className="ghost-button" onClick={resetSearchLimitPreference}>
+                    Reset default ({SEARCH_LIMIT})
+                  </button>
+                </div>
+                <p className="advanced-note">
+                  {`Current default: ${defaultSearchLimit.toLocaleString()} | Current active limit: ${searchLimit.toLocaleString()}`}
+                </p>
+                <p className="advanced-note">Load more uses this same amount each click.</p>
+                {settingsError ? <p className="advanced-error">{settingsError}</p> : null}
+                {settingsMessage ? <p className="advanced-success">{settingsMessage}</p> : null}
+              </div>
+            </div>
           </section>
         ) : null}
 
