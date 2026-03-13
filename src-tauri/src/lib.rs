@@ -95,6 +95,7 @@ unsafe extern "C" {
     fn omni_cancel_duplicate_scan() -> bool;
     fn omni_duplicate_scan_status_json() -> *mut c_char;
     fn omni_list_drives_json() -> *mut c_char;
+    fn omni_delete_path(path_utf8: *const c_char) -> bool;
     fn omni_free_string(ptr: *mut c_char);
 }
 
@@ -329,6 +330,25 @@ fn cancel_duplicate_scan() -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn delete_path(path: String) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let c_path = CString::new(path).map_err(|_| "Invalid path parameter".to_string())?;
+        let ok = unsafe { omni_delete_path(c_path.as_ptr()) };
+        if !ok {
+            return Err(read_last_error().unwrap_or_else(|| "Delete failed".to_string()));
+        }
+        return Ok(true);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("Delete is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
 fn list_drives() -> Result<Vec<DriveInfo>, String> {
     #[cfg(target_os = "windows")]
     {
@@ -494,6 +514,7 @@ pub fn run() {
             find_duplicate_groups,
             duplicate_scan_status,
             cancel_duplicate_scan,
+            delete_path,
             list_drives,
             open_file,
             reveal_in_folder,
