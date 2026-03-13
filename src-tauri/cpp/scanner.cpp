@@ -162,6 +162,14 @@ std::wstring ToLower(std::wstring value) {
   return value;
 }
 
+bool PathEqualsInsensitive(const std::wstring& left, const std::wstring& right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) ==
+         CSTR_EQUAL;
+}
+
 std::string DescribeWin32Error(const DWORD error_code) {
   LPSTR message_buffer = nullptr;
   const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
@@ -719,6 +727,18 @@ void RemoveIndexedFileByFrnLocked(const uint64_t frn) {
   }
   g_indexed_files.pop_back();
   g_file_position_by_frn.erase(position_it);
+}
+
+bool RemoveIndexedFileByPathLocked(const std::wstring& path) {
+  for (const IndexedFile& file : g_indexed_files) {
+    if (PathEqualsInsensitive(file.path, path)) {
+      const uint64_t frn = file.frn;
+      g_nodes.erase(frn);
+      RemoveIndexedFileByFrnLocked(frn);
+      return true;
+    }
+  }
+  return false;
 }
 
 void UpsertIndexedFileLocked(const uint64_t frn, const std::wstring& name,
@@ -2082,6 +2102,44 @@ extern "C" __declspec(dllexport) char* omni_duplicate_scan_status_json() {
     SetLastErrorText("Failed to allocate duplicate status buffer.");
   }
   return out;
+}
+
+extern "C" __declspec(dllexport) bool omni_delete_path(const char* path_utf8) {
+  const std::wstring path = Utf8ToWide(path_utf8 == nullptr ? "" : path_utf8);
+  if (path.empty()) {
+    SetLastErrorText("Delete failed: empty path.");
+    return false;
+  }
+
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  if (attributes == INVALID_FILE_ATTRIBUTES) {
+    SetLastErrorText(BuildWin32ErrorText("Delete failed: path not found.",
+                                         GetLastError()));
+    return false;
+  }
+
+  if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    if (RemoveDirectoryW(path.c_str()) == FALSE) {
+      SetLastErrorText(BuildWin32ErrorText("Failed to remove directory.",
+                                           GetLastError()));
+      return false;
+    }
+  } else {
+    if (DeleteFileW(path.c_str()) == FALSE) {
+      SetLastErrorText(BuildWin32ErrorText("Failed to delete file.", GetLastError()));
+      return false;
+    }
+  }
+
+  {
+    std::unique_lock<std::shared_mutex> lock(g_index_mutex);
+    RemoveIndexedFileByPathLocked(path);
+    g_indexed_count.store(static_cast<uint64_t>(g_indexed_files.size()),
+                          std::memory_order_release);
+  }
+
+  SetLastErrorText("");
+  return true;
 }
 
 extern "C" __declspec(dllexport) char* scan_mft(const char* drive_utf8) {
