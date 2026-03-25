@@ -1,6 +1,6 @@
 [package]
 name = "omni-search"
-version = "0.1.8"
+version = "0.1.9"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -19,8 +19,12 @@ tauri-build = { version = "2", features = [] }
 cc = "1"
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Com", "Win32_System_Ole", "Win32_System_ProcessStatus", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+windows-core = "0.61"

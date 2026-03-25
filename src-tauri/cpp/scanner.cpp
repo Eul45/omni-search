@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <winioctl.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <cwctype>
 #include <limits>
 #include <mutex>
+
 #include <shared_mutex>
 #include <string>
 #include <thread>
@@ -40,9 +42,8 @@ struct NodeEntry {
 
 struct IndexedFile {
   uint64_t frn;
-  std::wstring name;
+  uint64_t parent_frn;
   std::wstring path;
-  std::wstring extension_lower;
   bool is_directory;
 };
 
@@ -65,6 +66,8 @@ struct SearchRow {
   int64_t modified_unix;
   bool is_directory;
 };
+
+
 
 struct DuplicateFileRow {
   std::wstring name;
@@ -93,7 +96,7 @@ struct DriveInfo {
 
 std::shared_mutex g_index_mutex;
 std::vector<IndexedFile> g_indexed_files;
-std::unordered_map<uint64_t, size_t> g_file_position_by_frn;
+std::unordered_map<uint64_t, uint32_t> g_file_position_by_frn;
 std::unordered_map<uint64_t, NodeEntry> g_nodes;
 uint64_t g_root_frn = 0;
 std::wstring g_root_path;
@@ -170,6 +173,21 @@ bool PathEqualsInsensitive(const std::wstring& left, const std::wstring& right) 
          CSTR_EQUAL;
 }
 
+bool PathStartsWithInsensitive(const std::wstring& path,
+                               const std::wstring& prefix) {
+  if (prefix.empty() || path.size() < prefix.size()) {
+    return false;
+  }
+
+  if (CompareStringOrdinal(path.c_str(), static_cast<int>(prefix.size()),
+                           prefix.c_str(), static_cast<int>(prefix.size()),
+                           TRUE) != CSTR_EQUAL) {
+    return false;
+  }
+
+  return path.size() == prefix.size() || path[prefix.size()] == L'\\';
+}
+
 std::string DescribeWin32Error(const DWORD error_code) {
   LPSTR message_buffer = nullptr;
   const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
@@ -219,6 +237,17 @@ bool IsPathMissingError(const DWORD error_code) {
          error_code == ERROR_BAD_NETPATH ||
          error_code == ERROR_BAD_NET_NAME ||
          error_code == ERROR_NOT_READY;
+}
+
+bool IsFallbackEnumerationSkippableError(const DWORD error_code) {
+  return error_code == ERROR_ACCESS_DENIED ||
+         error_code == ERROR_FILE_NOT_FOUND ||
+         error_code == ERROR_PATH_NOT_FOUND ||
+         error_code == ERROR_INVALID_NAME ||
+         error_code == ERROR_SHARING_VIOLATION ||
+         error_code == ERROR_LOCK_VIOLATION ||
+         error_code == ERROR_NOT_READY ||
+         error_code == ERROR_DIRECTORY;
 }
 
 bool IsLiveWatcherCancelled(const uint64_t token) {
@@ -312,6 +341,29 @@ std::wstring ExtractExtensionLower(const std::wstring& file_name) {
   return ToLower(file_name.substr(dot + 1));
 }
 
+std::wstring ExtractFileNameFromPath(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) {
+    return path;
+  }
+  return path.substr(slash + 1);
+}
+
+std::wstring IndexedFileName(const IndexedFile& file) {
+  return ExtractFileNameFromPath(file.path);
+}
+
+std::wstring IndexedFileExtensionLower(const IndexedFile& file) {
+  if (file.is_directory) {
+    return L"";
+  }
+  return ExtractExtensionLower(IndexedFileName(file));
+}
+
+uint32_t ToIndexSlot(const size_t index) {
+  return static_cast<uint32_t>(index);
+}
+
 std::wstring NormalizeExtensionFilter(const char* extension_utf8) {
   std::wstring normalized =
       ToLower(Utf8ToWide(extension_utf8 == nullptr ? "" : extension_utf8));
@@ -382,6 +434,8 @@ bool ContainsCaseInsensitive(const std::wstring& text, const std::wstring& needl
   }
   return false;
 }
+
+
 
 void AppendEscapedJsonString(std::string* out, const std::string& value) {
   for (const char ch : value) {
@@ -526,7 +580,7 @@ std::string BasicFilesToJson(const std::vector<IndexedFile>& files) {
       json.push_back(',');
     }
     json.append("{\"name\":\"");
-    AppendEscapedJsonString(&json, WideToUtf8(files[i].name));
+    AppendEscapedJsonString(&json, WideToUtf8(IndexedFileName(files[i])));
     json.append("\",\"path\":\"");
     AppendEscapedJsonString(&json, WideToUtf8(files[i].path));
     json.append("\",\"isDirectory\":");
@@ -709,7 +763,110 @@ void RebuildFilePositionLookupLocked() {
   g_file_position_by_frn.clear();
   g_file_position_by_frn.reserve(g_indexed_files.size() * 2 + 1);
   for (size_t i = 0; i < g_indexed_files.size(); ++i) {
-    g_file_position_by_frn[g_indexed_files[i].frn] = i;
+    g_file_position_by_frn[g_indexed_files[i].frn] = ToIndexSlot(i);
+  }
+}
+
+void PruneFileNodes(std::unordered_map<uint64_t, NodeEntry>* nodes) {
+  for (auto it = nodes->begin(); it != nodes->end();) {
+    if (!it->second.is_directory) {
+      it = nodes->erase(it);
+      continue;
+    }
+    ++it;
+  }
+}
+
+void PruneFileNodesLocked() {
+  for (auto it = g_nodes.begin(); it != g_nodes.end();) {
+    if (!it->second.is_directory) {
+      it = g_nodes.erase(it);
+      continue;
+    }
+    ++it;
+  }
+}
+
+void ReleaseFileNodeNamesLocked() {
+  for (auto& pair : g_nodes) {
+    NodeEntry& node = pair.second;
+    if (!node.is_directory && !node.name.empty()) {
+      std::wstring().swap(node.name);
+    }
+  }
+}
+
+void RemoveIndexedSubtreeByPathLocked(const std::wstring& root_path) {
+  if (root_path.empty()) {
+    return;
+  }
+
+  size_t write_index = 0;
+  for (size_t read_index = 0; read_index < g_indexed_files.size(); ++read_index) {
+    IndexedFile& file = g_indexed_files[read_index];
+    if (PathStartsWithInsensitive(file.path, root_path)) {
+      continue;
+    }
+
+    if (write_index != read_index) {
+      g_indexed_files[write_index] = std::move(file);
+    }
+    ++write_index;
+  }
+
+  if (write_index < g_indexed_files.size()) {
+    g_indexed_files.resize(write_index);
+    RebuildFilePositionLookupLocked();
+  }
+}
+
+void UpdateIndexedSubtreePathsLocked(const std::wstring& old_root_path,
+                                     const std::wstring& new_root_path,
+                                     const uint64_t root_frn,
+                                     const uint64_t new_parent_frn) {
+  if (old_root_path.empty() || new_root_path.empty() ||
+      PathEqualsInsensitive(old_root_path, new_root_path)) {
+    return;
+  }
+
+  for (IndexedFile& file : g_indexed_files) {
+    if (!PathStartsWithInsensitive(file.path, old_root_path)) {
+      continue;
+    }
+
+    std::wstring suffix = file.path.substr(old_root_path.size());
+    file.path = new_root_path;
+    file.path.append(suffix);
+    if (file.frn == root_frn) {
+      file.parent_frn = new_parent_frn;
+    }
+  }
+}
+
+void RemoveDirectorySubtreeNodesLocked(const uint64_t root_frn) {
+  if (root_frn == 0) {
+    return;
+  }
+
+  std::unordered_set<uint64_t> frns_to_remove;
+  frns_to_remove.insert(root_frn);
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto& pair : g_nodes) {
+      if (frns_to_remove.find(pair.first) != frns_to_remove.end()) {
+        continue;
+      }
+      if (frns_to_remove.find(pair.second.parent_frn) != frns_to_remove.end()) {
+        frns_to_remove.insert(pair.first);
+        changed = true;
+      }
+    }
+  }
+
+  for (const uint64_t frn : frns_to_remove) {
+    g_nodes.erase(frn);
   }
 }
 
@@ -719,11 +876,11 @@ void RemoveIndexedFileByFrnLocked(const uint64_t frn) {
     return;
   }
 
-  const size_t remove_index = position_it->second;
+  const size_t remove_index = static_cast<size_t>(position_it->second);
   const size_t last_index = g_indexed_files.size() - 1;
   if (remove_index != last_index) {
     g_indexed_files[remove_index] = std::move(g_indexed_files[last_index]);
-    g_file_position_by_frn[g_indexed_files[remove_index].frn] = remove_index;
+    g_file_position_by_frn[g_indexed_files[remove_index].frn] = ToIndexSlot(remove_index);
   }
   g_indexed_files.pop_back();
   g_file_position_by_frn.erase(position_it);
@@ -741,34 +898,35 @@ bool RemoveIndexedFileByPathLocked(const std::wstring& path) {
   return false;
 }
 
-void UpsertIndexedFileLocked(const uint64_t frn, const std::wstring& name,
-                             std::wstring full_path, const bool is_directory) {
+void UpsertIndexedFileLocked(const uint64_t frn, const uint64_t parent_frn,
+                             std::wstring full_path,
+                             const bool is_directory) {
   IndexedFile next_file{
       frn,
-      name,
+      parent_frn,
       std::move(full_path),
-      is_directory ? L"" : ExtractExtensionLower(name),
       is_directory,
   };
   const auto position_it = g_file_position_by_frn.find(frn);
   if (position_it == g_file_position_by_frn.end()) {
-    g_file_position_by_frn.emplace(frn, g_indexed_files.size());
+    g_file_position_by_frn.emplace(frn, ToIndexSlot(g_indexed_files.size()));
     g_indexed_files.push_back(std::move(next_file));
     return;
   }
 
-  g_indexed_files[position_it->second] = std::move(next_file);
+  g_indexed_files[static_cast<size_t>(position_it->second)] = std::move(next_file);
 }
 
 void RebuildIndexedFilesFromNodesLocked() {
+  std::vector<IndexedFile> previous_files = std::move(g_indexed_files);
   g_indexed_files.clear();
   g_file_position_by_frn.clear();
-  if (g_root_frn == 0 || g_root_path.empty() || g_nodes.empty()) {
+  if (g_root_frn == 0 || g_root_path.empty() || previous_files.empty()) {
     return;
   }
 
-  g_indexed_files.reserve(g_nodes.size() / 2 + 1);
-  g_file_position_by_frn.reserve(g_nodes.size() / 2 + 1);
+  g_indexed_files.reserve(previous_files.size());
+  g_file_position_by_frn.reserve(previous_files.size() * 2 + 1);
 
   std::unordered_map<uint64_t, std::wstring> path_cache;
   path_cache.reserve(g_nodes.size() / 2 + 1);
@@ -777,28 +935,44 @@ void RebuildIndexedFilesFromNodesLocked() {
   const bool include_directories =
       g_include_directories.load(std::memory_order_acquire);
 
-  for (const auto& pair : g_nodes) {
-    const uint64_t frn = pair.first;
-    const NodeEntry& node = pair.second;
-    if (node.name.empty() || (node.is_directory && !include_directories)) {
+  for (const IndexedFile& file : previous_files) {
+    if (file.is_directory && !include_directories) {
       continue;
     }
 
-    resolving.clear();
     std::wstring full_path;
-    const bool resolved = ResolvePathForFrn(frn, g_root_frn, g_root_path, g_nodes,
-                                            &path_cache, &resolving, &full_path);
+    bool resolved = false;
+    if (file.is_directory) {
+      resolving.clear();
+      resolved = ResolvePathForFrn(file.frn, g_root_frn, g_root_path, g_nodes, &path_cache,
+                                   &resolving, &full_path);
+    } else {
+      const std::wstring entry_name = ExtractFileNameFromPath(file.path);
+      if (entry_name.empty()) {
+        continue;
+      }
+      std::wstring parent_path;
+      resolving.clear();
+      resolved = ResolvePathForFrn(file.parent_frn, g_root_frn, g_root_path, g_nodes,
+                                   &path_cache, &resolving, &parent_path);
+      if (resolved) {
+        full_path = std::move(parent_path);
+        if (!full_path.empty() && full_path.back() != L'\\') {
+          full_path.push_back(L'\\');
+        }
+        full_path.append(entry_name);
+      }
+    }
     if (!resolved || full_path.empty()) {
       continue;
     }
 
-    g_file_position_by_frn.emplace(frn, g_indexed_files.size());
+    g_file_position_by_frn.emplace(file.frn, ToIndexSlot(g_indexed_files.size()));
     g_indexed_files.push_back(IndexedFile{
-        frn,
-        node.name,
+        file.frn,
+        file.parent_frn,
         std::move(full_path),
-        node.is_directory ? L"" : ExtractExtensionLower(node.name),
-        node.is_directory,
+        file.is_directory,
     });
   }
 }
@@ -808,7 +982,6 @@ void ApplyUsnBatchLocked(const std::vector<RawUsnEntry>& entries) {
     return;
   }
 
-  bool requires_full_rebuild = false;
   const bool include_directories =
       g_include_directories.load(std::memory_order_acquire);
   std::unordered_map<uint64_t, std::wstring> path_cache;
@@ -836,54 +1009,81 @@ void ApplyUsnBatchLocked(const std::vector<RawUsnEntry>& entries) {
       old_node = old_node_it->second;
     }
 
-    if (is_delete) {
-      if (had_old_node && old_node.is_directory) {
-        requires_full_rebuild = true;
+    std::wstring old_directory_path;
+    if (had_old_node && old_node.is_directory) {
+      resolving.clear();
+      const bool resolved_old_path =
+          ResolvePathForFrn(entry.frn, g_root_frn, g_root_path, g_nodes, &path_cache,
+                            &resolving, &old_directory_path);
+      if (!resolved_old_path) {
+        old_directory_path.clear();
       }
-      g_nodes.erase(entry.frn);
-      RemoveIndexedFileByFrnLocked(entry.frn);
+    }
+
+    if (is_delete) {
+      if (had_old_node && old_node.is_directory && !old_directory_path.empty()) {
+        RemoveDirectorySubtreeNodesLocked(entry.frn);
+        RemoveIndexedSubtreeByPathLocked(old_directory_path);
+      } else {
+        g_nodes.erase(entry.frn);
+        RemoveIndexedFileByFrnLocked(entry.frn);
+      }
       continue;
     }
 
-    g_nodes[entry.frn] = NodeEntry{entry.parent_frn, entry.name, entry.is_directory};
-
     if (entry.is_directory) {
-      if (!had_old_node || !old_node.is_directory ||
-          old_node.parent_frn != entry.parent_frn || old_node.name != entry.name) {
-        requires_full_rebuild = true;
-      }
-      if (!include_directories) {
-        RemoveIndexedFileByFrnLocked(entry.frn);
-        continue;
-      }
+      g_nodes[entry.frn] = NodeEntry{entry.parent_frn, entry.name, entry.is_directory};
 
       resolving.clear();
       std::wstring full_path;
       const bool resolved = ResolvePathForFrn(entry.frn, g_root_frn, g_root_path, g_nodes,
                                               &path_cache, &resolving, &full_path);
       if (!resolved || full_path.empty()) {
+        if (had_old_node && old_node.is_directory && !old_directory_path.empty()) {
+          RemoveIndexedSubtreeByPathLocked(old_directory_path);
+        } else {
+          RemoveIndexedFileByFrnLocked(entry.frn);
+        }
+        continue;
+      }
+
+      if (!old_directory_path.empty() &&
+          !PathEqualsInsensitive(old_directory_path, full_path)) {
+        UpdateIndexedSubtreePathsLocked(old_directory_path, full_path, entry.frn,
+                                        entry.parent_frn);
+      }
+
+      if (!include_directories) {
         RemoveIndexedFileByFrnLocked(entry.frn);
         continue;
       }
 
-      UpsertIndexedFileLocked(entry.frn, entry.name, std::move(full_path), true);
+      UpsertIndexedFileLocked(entry.frn, entry.parent_frn, std::move(full_path), true);
       continue;
     }
 
+    if (had_old_node && old_node.is_directory && !old_directory_path.empty()) {
+      RemoveDirectorySubtreeNodesLocked(entry.frn);
+      RemoveIndexedSubtreeByPathLocked(old_directory_path);
+    }
+
+    std::wstring parent_path;
     resolving.clear();
-    std::wstring full_path;
-    const bool resolved = ResolvePathForFrn(entry.frn, g_root_frn, g_root_path, g_nodes,
-                                            &path_cache, &resolving, &full_path);
-    if (!resolved || full_path.empty()) {
+    const bool resolved = ResolvePathForFrn(entry.parent_frn, g_root_frn, g_root_path, g_nodes,
+                                            &path_cache, &resolving, &parent_path);
+    if (!resolved || parent_path.empty()) {
       RemoveIndexedFileByFrnLocked(entry.frn);
       continue;
     }
 
-    UpsertIndexedFileLocked(entry.frn, entry.name, std::move(full_path), false);
-  }
+    std::wstring full_path = std::move(parent_path);
+    if (!full_path.empty() && full_path.back() != L'\\') {
+      full_path.push_back(L'\\');
+    }
+    full_path.append(entry.name);
 
-  if (requires_full_rebuild) {
-    RebuildIndexedFilesFromNodesLocked();
+    UpsertIndexedFileLocked(entry.frn, entry.parent_frn, std::move(full_path), false);
+    g_nodes.erase(entry.frn);
   }
   g_indexed_count.store(static_cast<uint64_t>(g_indexed_files.size()),
                         std::memory_order_release);
@@ -894,6 +1094,7 @@ void ApplyScanSnapshotLocked(ScanSnapshot* snapshot) {
   g_nodes = std::move(snapshot->nodes);
   g_root_frn = snapshot->root_frn;
   g_root_path = std::move(snapshot->root_path);
+  PruneFileNodesLocked();
   RebuildFilePositionLookupLocked();
 }
 
@@ -1252,7 +1453,7 @@ std::vector<DuplicateGroupRow> find_duplicates_internal(const uint64_t min_size,
     const IndexedFile& file = indexed_snapshot[index];
     const uint64_t size = metadata_sizes[index];
     size_buckets[size].push_back(DuplicateFileRow{
-        file.name,
+        IndexedFileName(file),
         file.path,
         size,
         metadata_created[index],
@@ -1415,6 +1616,122 @@ duplicate_finish:
   return groups;
 }
 
+bool scan_fallback_internal(const std::wstring& drive_letter, ScanSnapshot* out_snapshot,
+                            const bool include_directories,
+                            const uint64_t request_token, bool* out_cancelled,
+                            std::string* out_error) {
+  *out_cancelled = false;
+  out_snapshot->files.clear();
+  out_snapshot->nodes.clear();
+  out_snapshot->root_frn = 0;
+  out_snapshot->root_path.clear();
+  out_snapshot->journal_id = 0;
+  out_snapshot->journal_next_usn = 0;
+  out_snapshot->live_updates_supported = false;
+
+  const std::wstring root_path = drive_letter + L":\\";
+  const DWORD root_attributes = GetFileAttributesW(root_path.c_str());
+  if (root_attributes == INVALID_FILE_ATTRIBUTES ||
+      (root_attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    *out_error = BuildWin32ErrorText(
+        "Fallback indexing failed because drive root is not accessible.",
+        GetLastError());
+    return false;
+  }
+
+  std::vector<IndexedFile> files;
+  files.reserve(240000);
+  std::vector<std::wstring> directories;
+  directories.reserve(8192);
+  directories.push_back(root_path);
+
+  uint64_t synthetic_frn = 1;
+  while (!directories.empty()) {
+    if (IsIndexingCancelled(request_token)) {
+      *out_cancelled = true;
+      return false;
+    }
+
+    std::wstring current_dir = std::move(directories.back());
+    directories.pop_back();
+
+    std::wstring pattern = current_dir;
+    if (!pattern.empty() && pattern.back() != L'\\') {
+      pattern.push_back(L'\\');
+    }
+    pattern.append(L"*");
+
+    WIN32_FIND_DATAW entry{};
+    HANDLE find_handle = FindFirstFileExW(
+        pattern.c_str(), FindExInfoBasic, &entry, FindExSearchNameMatch, nullptr,
+        FIND_FIRST_EX_LARGE_FETCH);
+    if (find_handle == INVALID_HANDLE_VALUE) {
+      const DWORD error = GetLastError();
+      if (!IsFallbackEnumerationSkippableError(error)) {
+        // Skip isolated directory read errors to keep fallback robust.
+      }
+      continue;
+    }
+
+    do {
+      if (IsIndexingCancelled(request_token)) {
+        FindClose(find_handle);
+        *out_cancelled = true;
+        return false;
+      }
+
+      const wchar_t* name = entry.cFileName;
+      if (name[0] == L'.' &&
+          (name[1] == L'\0' || (name[1] == L'.' && name[2] == L'\0'))) {
+        continue;
+      }
+
+      std::wstring full_path = current_dir;
+      if (!full_path.empty() && full_path.back() != L'\\') {
+        full_path.push_back(L'\\');
+      }
+      full_path.append(name);
+
+      const bool is_directory =
+          (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+      const bool is_reparse_point =
+          (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+
+      if (is_directory) {
+        if (!is_reparse_point) {
+          directories.push_back(full_path);
+        }
+        if (!include_directories) {
+          continue;
+        }
+      }
+
+      files.push_back(IndexedFile{
+          synthetic_frn++,
+          0,
+          std::move(full_path),
+          is_directory,
+      });
+
+      if ((files.size() & 0x0FFF) == 0) {
+        g_indexed_count.store(static_cast<uint64_t>(files.size()),
+                              std::memory_order_relaxed);
+      }
+    } while (FindNextFileW(find_handle, &entry) != FALSE);
+
+    FindClose(find_handle);
+  }
+
+  out_snapshot->files = std::move(files);
+  out_snapshot->nodes.clear();
+  out_snapshot->root_frn = 0;
+  out_snapshot->root_path = root_path;
+  out_snapshot->journal_id = 0;
+  out_snapshot->journal_next_usn = 0;
+  out_snapshot->live_updates_supported = false;
+  return true;
+}
+
 bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snapshot,
                        const bool include_directories, const uint64_t request_token,
                        bool* out_cancelled, std::string* out_error) {
@@ -1570,14 +1887,14 @@ bool scan_mft_internal(const std::wstring& drive_letter, ScanSnapshot* out_snaps
     }
     files.push_back(IndexedFile{
         frn,
-        node.name,
+        node.parent_frn,
         std::move(full_path),
-        node.is_directory ? L"" : ExtractExtensionLower(node.name),
         node.is_directory,
     });
   }
 
   out_snapshot->files = std::move(files);
+  PruneFileNodes(&nodes);
   out_snapshot->nodes = std::move(nodes);
   out_snapshot->root_frn = root_frn;
   out_snapshot->root_path = root_path;
@@ -1746,7 +2063,7 @@ std::vector<std::wstring> ResolveTargetDrivesForIndexing(
   const std::vector<DriveInfo> rows = list_drives_internal();
   drives.reserve(rows.size());
   for (const DriveInfo& row : rows) {
-    if (!row.is_ntfs || !row.can_open_volume) {
+    if (!row.is_ntfs) {
       continue;
     }
     drives.push_back(row.letter);
@@ -1793,8 +2110,14 @@ extern "C" __declspec(dllexport) bool omni_start_indexing(
             ScanSnapshot snapshot;
             std::string error;
             bool cancelled = false;
-            const bool ok = scan_mft_internal(target_drive, &snapshot, include_directories,
-                                              request_token, &cancelled, &error);
+            const bool can_use_accelerated = CanOpenVolume(target_drive);
+            const bool ok = can_use_accelerated
+                                ? scan_mft_internal(target_drive, &snapshot,
+                                                    include_directories, request_token,
+                                                    &cancelled, &error)
+                                : scan_fallback_internal(target_drive, &snapshot,
+                                                         include_directories, request_token,
+                                                         &cancelled, &error);
             if (cancelled || IsIndexingCancelled(request_token)) {
               return;
             }
@@ -1848,8 +2171,14 @@ extern "C" __declspec(dllexport) bool omni_start_indexing(
         ScanSnapshot snapshot;
         std::string error;
         bool cancelled = false;
-        const bool ok = scan_mft_internal(drive_letter, &snapshot, include_directories,
-                                          request_token, &cancelled, &error);
+        const bool can_use_accelerated = CanOpenVolume(drive_letter);
+        const bool ok = can_use_accelerated
+                            ? scan_mft_internal(drive_letter, &snapshot,
+                                                include_directories, request_token,
+                                                &cancelled, &error)
+                            : scan_fallback_internal(drive_letter, &snapshot,
+                                                     include_directories, request_token,
+                                                     &cancelled, &error);
         if (cancelled || IsIndexingCancelled(request_token)) {
           return;
         }
@@ -1932,10 +2261,12 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
       g_scan_all_drives_mode.load(std::memory_order_acquire) && limit > 1 &&
       query.empty() && (has_extension_filter || has_size_filter || has_date_filter);
 
+
   std::vector<SearchRow> rows;
   rows.reserve(limit);
   std::unordered_map<wchar_t, std::vector<SearchRow>> drive_buckets;
   std::vector<wchar_t> drive_order;
+
   if (distribute_across_drives) {
     drive_buckets.reserve(16);
     drive_order.reserve(16);
@@ -1952,7 +2283,8 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
           if (!file.is_directory) {
             continue;
           }
-        } else if (file.is_directory || file.extension_lower != extension_filter) {
+        } else if (file.is_directory ||
+                   IndexedFileExtensionLower(file) != extension_filter) {
           continue;
         }
       }
@@ -1986,16 +2318,16 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
       }
 
       SearchRow row{
-          file.name,
+          IndexedFileName(file),
           file.path,
-          file.extension_lower,
+          IndexedFileExtensionLower(file),
           size,
           created,
           modified,
           file.is_directory,
       };
-
-      if (distribute_across_drives) {
+if (distribute_across_drives) {
+  
         const wchar_t bucket_key = DriveBucketKeyFromPath(file.path);
         auto bucket_it = drive_buckets.find(bucket_key);
         if (bucket_it == drive_buckets.end()) {
@@ -2012,8 +2344,8 @@ extern "C" __declspec(dllexport) char* omni_search_files_json(
       }
     }
   }
+if (distribute_across_drives) {
 
-  if (distribute_across_drives) {
     rows.clear();
     rows.reserve(limit);
     std::vector<size_t> bucket_offsets(drive_order.size(), 0);
@@ -2104,7 +2436,39 @@ extern "C" __declspec(dllexport) char* omni_duplicate_scan_status_json() {
   return out;
 }
 
-extern "C" __declspec(dllexport) bool omni_delete_path(const char* path_utf8) {
+bool DeletePathWithShell(const std::wstring& path, bool recycle_bin) {
+  std::vector<wchar_t> shell_path(path.begin(), path.end());
+  shell_path.push_back(L'\0');
+  shell_path.push_back(L'\0');
+
+  SHFILEOPSTRUCTW operation{};
+  operation.wFunc = FO_DELETE;
+  operation.pFrom = shell_path.data();
+  operation.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+  if (recycle_bin) {
+    operation.fFlags |= FOF_ALLOWUNDO;
+  }
+
+  const int result = SHFileOperationW(&operation);
+  if (result != 0) {
+    SetLastErrorText(BuildWin32ErrorText(
+        recycle_bin ? "Failed to move item to the Recycle Bin."
+                    : "Failed to delete item.",
+        static_cast<DWORD>(result)));
+    return false;
+  }
+
+  if (operation.fAnyOperationsAborted) {
+    SetLastErrorText(recycle_bin ? "Move to Recycle Bin cancelled."
+                                 : "Delete cancelled.");
+    return false;
+  }
+
+  return true;
+}
+
+extern "C" __declspec(dllexport) bool omni_delete_path(const char* path_utf8,
+                                                       bool recycle_bin) {
   const std::wstring path = Utf8ToWide(path_utf8 == nullptr ? "" : path_utf8);
   if (path.empty()) {
     SetLastErrorText("Delete failed: empty path.");
@@ -2118,17 +2482,8 @@ extern "C" __declspec(dllexport) bool omni_delete_path(const char* path_utf8) {
     return false;
   }
 
-  if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-    if (RemoveDirectoryW(path.c_str()) == FALSE) {
-      SetLastErrorText(BuildWin32ErrorText("Failed to remove directory.",
-                                           GetLastError()));
-      return false;
-    }
-  } else {
-    if (DeleteFileW(path.c_str()) == FALSE) {
-      SetLastErrorText(BuildWin32ErrorText("Failed to delete file.", GetLastError()));
-      return false;
-    }
+  if (!DeletePathWithShell(path, recycle_bin)) {
+    return false;
   }
 
   {

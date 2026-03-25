@@ -1,8 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type {
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import "./App.css";
+import {
+  DEFAULT_DESKTOP_SETTINGS,
+  getDesktopSettings,
+  listenForWindowMode,
+  openFullWindow,
+  openQuickWindow,
+  syncNativeWindowTheme,
+  updateDesktopSettings,
+} from "./desktop";
+import type { DesktopSettings, WindowMode } from "./desktop";
 
 const POLL_INTERVAL_MS = 700;
 const SEARCH_DEBOUNCE_MS = 130;
@@ -10,9 +25,10 @@ const FILTER_SEARCH_DEBOUNCE_MS = 320;
 const SEARCH_LIMIT = 200;
 const SEARCH_LIMIT_MIN = SEARCH_LIMIT;
 const SEARCH_LIMIT_MAX = 5000;
-const PREVIEW_PREFETCH_LIMIT = 40;
+const PREVIEW_DATA_URL_LIMIT = 1;
 const DUPLICATE_CANCEL_MESSAGE = "Duplicate scan cancelled.";
 const DUPLICATE_NOTICE_TIMEOUT_MS = 2400;
+const ACTION_NOTICE_TIMEOUT_MS = 1800;
 
 type IndexStatus = {
   indexing: boolean;
@@ -63,6 +79,26 @@ type DuplicateDeleteCandidate = {
   size: number;
 };
 
+type SearchResultContextMenuState = {
+  x: number;
+  y: number;
+  rowKey: string;
+  result: SearchResult;
+};
+
+type SearchResultRenameDraft = {
+  rowKey: string;
+  path: string;
+  currentName: string;
+  nextName: string;
+};
+
+type SearchResultDeleteCandidate = {
+  rowKey: string;
+  path: string;
+  name: string;
+};
+
 type DriveInfo = {
   letter: string;
   path: string;
@@ -80,13 +116,32 @@ type SocialLink = {
   icon: SocialIconName;
 };
 
-type ActiveTab = "search" | "duplicates" | "advanced" | "about";
+type DeveloperApp = {
+  name: string;
+  url: string;
+  blurb: string;
+  icon: "clipboard" | "workspace" | "capture";
+  accent: "sky" | "mint" | "amber";
+};
+
+type ActiveTab = "search" | "duplicates" | "advanced" | "themes" | "about";
 type ResultViewTab = "all" | "apps" | "media" | "docs" | "archives";
 type ResultSortMode = "relevance" | "newest" | "largest" | "name";
 type ThemeMode = "dark" | "light";
 type PreviewKind = "image" | "video" | "pdf" | "none";
-const THEME_PRESET_IDS = ["slate", "nordic", "aurora", "ember", "cedar", "solar"] as const;
+const THEME_PRESET_IDS = [
+  "slate-glass",
+  "slate",
+  "modern",
+  "metro",
+  "nordic",
+  "aurora",
+  "ember",
+  "cedar",
+  "solar",
+] as const;
 type ThemePresetId = (typeof THEME_PRESET_IDS)[number];
+const DEFAULT_THEME_PRESET: ThemePresetId = "slate-glass";
 type ThemeVariableSet = Record<string, string>;
 type ThemePreviewSwatch = {
   bg: string;
@@ -110,6 +165,7 @@ type ThemePreset = {
 };
 
 const DEVELOPER_NAME = "Eyuel Engida";
+const DONATE_URL = "http://buymeacoffee.com/eyuelengida";
 const THEME_STORAGE_KEY = "omnisearch_theme_mode";
 const THEME_PRESET_STORAGE_KEY = "omnisearch_theme_preset";
 const PREVIEW_STORAGE_KEY = "omnisearch_show_previews";
@@ -339,6 +395,229 @@ const THEME_PRESETS: ThemePreset[] = [
         text: "#1f2835",
         muted: "#657385",
         glow: "rgba(58, 130, 230, 0.16)",
+      },
+    },
+  },
+  {
+    id: "slate-glass",
+    label: "Slate Glass",
+    description: "Slate glass surfaces with a crisp Windows-inspired companion light mode.",
+    dark: {
+      "--bg-deep": "#0b1117",
+      "--bg-mid": "#161b22",
+      "--panel": "rgba(22, 27, 34, 0.8)",
+      "--panel-border": "rgba(255, 255, 255, 0.08)",
+      "--text-main": "#ffffff",
+      "--text-muted": "rgba(255, 255, 255, 0.6)",
+      "--accent": "#58a6ff",
+      "--danger": "#ff7b72",
+      "--body-glow-a": "rgba(88, 166, 255, 0.1)",
+      "--body-glow-b": "rgba(0, 0, 0, 0)",
+      "--panel-shadow": "0 8px 32px rgba(0, 0, 0, 0.45)",
+      "--surface-elevated": "rgba(48, 54, 61, 0.95)",
+      "--surface-strong": "rgba(33, 38, 45, 0.98)",
+      "--surface-input": "rgba(255, 255, 255, 0.05)",
+      "--surface-muted": "rgba(255, 255, 255, 0.03)",
+      "--surface-toolbar": "rgba(22, 27, 34, 0.6)",
+      "--border-soft": "rgba(255, 255, 255, 0.06)",
+      "--border-strong": "rgba(255, 255, 255, 0.12)",
+      "--text-soft-contrast": "rgba(255, 255, 255, 0.85)",
+      "--highlight-bg": "rgba(88, 166, 255, 0.15)",
+      "--highlight-text": "#ffffff",
+      "--result-hover": "rgba(255, 255, 255, 0.04)",
+    },
+      light: {
+      "--bg-deep": "#f3f3f3",
+      "--bg-mid": "#eeeeee",
+      "--panel": "rgba(255, 255, 255, 0.7)",
+      "--panel-border": "rgba(0, 0, 0, 0.06)",
+      "--text-main": "#1a1a1a",
+      "--text-muted": "rgba(0, 0, 0, 0.6)",
+      "--accent": "#005fb8",
+      "--danger": "#c42b1c",
+      "--body-glow-a": "rgba(0, 95, 184, 0.05)",
+      "--body-glow-b": "rgba(255, 255, 255, 0)",
+      "--panel-shadow": "0 8px 32px rgba(0, 0, 0, 0.1)",
+      "--surface-elevated": "rgba(255, 255, 255, 0.85)",
+      "--surface-strong": "#ffffff",
+      "--surface-input": "rgba(255, 255, 255, 0.6)",
+      "--surface-muted": "rgba(0, 0, 0, 0.02)",
+      "--surface-toolbar": "rgba(243, 243, 243, 0.8)",
+      "--border-soft": "rgba(0, 0, 0, 0.05)",
+      "--border-strong": "rgba(0, 0, 0, 0.1)",
+      "--text-soft-contrast": "rgba(0, 0, 0, 0.8)",
+      "--highlight-bg": "rgba(0, 95, 184, 0.1)",
+      "--highlight-text": "#005fb8",
+      "--result-hover": "rgba(0, 0, 0, 0.03)",
+    },
+    preview: {
+      dark: {
+        bg: "#0b1117",
+        panel: "#161b22",
+        panelAlt: "#21262d",
+        accent: "#58a6ff",
+        text: "#ffffff",
+        muted: "rgba(255, 255, 255, 0.6)",
+        glow: "rgba(88, 166, 255, 0.18)",
+      },
+      light: {
+        bg: "#f3f3f3",
+        panel: "#ffffff",
+        panelAlt: "#eeeeee",
+        accent: "#005fb8",
+        text: "#1a1a1a",
+        muted: "rgba(0, 0, 0, 0.6)",
+        glow: "rgba(0, 95, 184, 0.16)",
+      },
+    },
+  },
+  {
+    id: "modern",
+    label: "Modern Sleek",
+    description: "Windows-style productivity neutrals with a clean blue accent.",
+   dark: {
+  "--bg-deep": "#1c1c1c",
+  "--bg-mid": "#262626",
+  "--panel": "rgba(32, 32, 32, 0.75)",
+  "--panel-border": "rgba(255, 255, 255, 0.08)",
+  "--text-main": "#ffffff",
+  "--text-muted": "rgba(255, 255, 255, 0.6)",
+  "--accent": "#60cdff",
+  "--danger": "#ff99a4",
+  "--body-glow-a": "rgba(96, 205, 255, 0.08)",
+  "--body-glow-b": "rgba(0, 0, 0, 0)",
+  "--panel-shadow": "0 8px 32px rgba(0, 0, 0, 0.4)",
+  "--surface-elevated": "rgba(45, 45, 45, 0.95)",
+  "--surface-strong": "rgba(50, 50, 50, 0.98)",
+  "--surface-input": "rgba(255, 255, 255, 0.06)",
+  "--surface-muted": "rgba(255, 255, 255, 0.04)",
+  "--surface-toolbar": "rgba(32, 32, 32, 0.6)",
+  "--border-soft": "rgba(255, 255, 255, 0.05)",
+  "--border-strong": "rgba(255, 255, 255, 0.12)",
+  "--text-soft-contrast": "rgba(255, 255, 255, 0.9)",
+  "--highlight-bg": "rgba(96, 205, 255, 0.15)",
+  "--highlight-text": "#ffffff",
+  "--result-hover": "rgba(255, 255, 255, 0.06)",
+},
+
+    light: {
+      "--bg-deep": "#f3f3f3",
+      "--bg-mid": "#fbfbfb",
+      "--panel": "rgba(255, 255, 255, 0.97)",
+      "--panel-border": "rgba(31, 31, 31, 0.09)",
+      "--text-main": "#1f1f1f",
+      "--text-muted": "#666666",
+      "--accent": "#0078d4",
+      "--danger": "#c04451",
+      "--body-glow-a": "rgba(0, 120, 212, 0.1)",
+      "--body-glow-b": "rgba(31, 31, 31, 0.03)",
+      "--panel-shadow": "0 20px 44px rgba(31, 31, 31, 0.1)",
+      "--surface-elevated": "rgba(245, 245, 245, 0.96)",
+      "--surface-strong": "rgba(255, 255, 255, 0.99)",
+      "--surface-input": "rgba(255, 255, 255, 1)",
+      "--surface-muted": "rgba(248, 248, 248, 0.98)",
+      "--surface-toolbar":
+        "linear-gradient(180deg, rgba(247, 247, 247, 0.98), rgba(255, 255, 255, 0.96))",
+      "--border-soft": "rgba(31, 31, 31, 0.08)",
+      "--border-strong": "rgba(31, 31, 31, 0.14)",
+      "--text-soft-contrast": "#505050",
+      "--highlight-bg": "rgba(0, 120, 212, 0.16)",
+      "--highlight-text": "#0f3358",
+      "--result-hover": "rgba(31, 31, 31, 0.04)",
+    },
+    preview: {
+      dark: {
+        bg: "#202020",
+        panel: "#2c2c2c",
+        panelAlt: "#343434",
+        accent: "#0078d4",
+        text: "#f0f0f0",
+        muted: "#bcbcbc",
+        glow: "rgba(0, 120, 212, 0.22)",
+      },
+      light: {
+        bg: "#f3f3f3",
+        panel: "#ffffff",
+        panelAlt: "#ececec",
+        accent: "#0078d4",
+        text: "#1f1f1f",
+        muted: "#666666",
+        glow: "rgba(0, 120, 212, 0.14)",
+      },
+    },
+  },
+  {
+    id: "metro",
+    label: "Metro",
+    description: "Sharper blue-gray surfaces with a polished Windows utility feel.",
+    dark: {
+      "--bg-deep": "#1c222b",
+      "--bg-mid": "#283341",
+      "--panel": "rgba(42, 52, 66, 0.92)",
+      "--panel-border": "rgba(145, 170, 214, 0.18)",
+      "--text-main": "#eef4fc",
+      "--text-muted": "#aebed6",
+      "--accent": "#2f89ff",
+      "--danger": "#ff7b84",
+      "--body-glow-a": "rgba(47, 137, 255, 0.16)",
+      "--body-glow-b": "rgba(168, 199, 255, 0.08)",
+      "--panel-shadow": "0 26px 72px rgba(0, 0, 0, 0.38)",
+      "--surface-elevated": "rgba(35, 44, 56, 0.9)",
+      "--surface-strong": "rgba(42, 52, 66, 0.97)",
+      "--surface-input": "rgba(28, 36, 46, 0.98)",
+      "--surface-muted": "rgba(37, 46, 58, 0.92)",
+      "--surface-toolbar":
+        "linear-gradient(180deg, rgba(44, 54, 68, 0.96), rgba(32, 40, 51, 0.9))",
+      "--border-soft": "rgba(143, 170, 211, 0.18)",
+      "--border-strong": "rgba(145, 170, 214, 0.28)",
+      "--text-soft-contrast": "#d8e5f8",
+      "--highlight-bg": "rgba(47, 137, 255, 0.24)",
+      "--highlight-text": "#f4f9ff",
+      "--result-hover": "rgba(47, 137, 255, 0.08)",
+    },
+    light: {
+      "--bg-deep": "#f3f7fb",
+      "--bg-mid": "#e7eef7",
+      "--panel": "rgba(255, 255, 255, 0.97)",
+      "--panel-border": "rgba(103, 131, 176, 0.18)",
+      "--text-main": "#1e2a3b",
+      "--text-muted": "#61748c",
+      "--accent": "#2f79e9",
+      "--danger": "#b94752",
+      "--body-glow-a": "rgba(47, 121, 233, 0.12)",
+      "--body-glow-b": "rgba(95, 125, 170, 0.08)",
+      "--panel-shadow": "0 22px 46px rgba(60, 83, 121, 0.12)",
+      "--surface-elevated": "rgba(239, 244, 250, 0.96)",
+      "--surface-strong": "rgba(255, 255, 255, 0.99)",
+      "--surface-input": "rgba(255, 255, 255, 1)",
+      "--surface-muted": "rgba(244, 247, 251, 0.98)",
+      "--surface-toolbar":
+        "linear-gradient(180deg, rgba(239, 244, 250, 0.98), rgba(249, 251, 254, 0.96))",
+      "--border-soft": "rgba(102, 130, 173, 0.16)",
+      "--border-strong": "rgba(102, 130, 173, 0.24)",
+      "--text-soft-contrast": "#4c617e",
+      "--highlight-bg": "rgba(47, 121, 233, 0.16)",
+      "--highlight-text": "#113766",
+      "--result-hover": "rgba(47, 121, 233, 0.06)",
+    },
+    preview: {
+      dark: {
+        bg: "#1c222b",
+        panel: "#2a3442",
+        panelAlt: "#22303d",
+        accent: "#2f89ff",
+        text: "#eef4fc",
+        muted: "#aebed6",
+        glow: "rgba(47, 137, 255, 0.22)",
+      },
+      light: {
+        bg: "#f3f7fb",
+        panel: "#ffffff",
+        panelAlt: "#e6eef7",
+        accent: "#2f79e9",
+        text: "#1e2a3b",
+        muted: "#61748c",
+        glow: "rgba(47, 121, 233, 0.16)",
       },
     },
   },
@@ -656,6 +935,31 @@ const SOCIAL_LINKS: SocialLink[] = [
   { label: "Telegram", url: "https://t.me/Eul_zzz", icon: "telegram" },
 ];
 
+const MORE_APPS: DeveloperApp[] = [
+  {
+    name: "OmniClip",
+    url: "https://apps.microsoft.com/detail/9N53Z3QVL322?hl=en-us&gl=US&ocid=pdpshare",
+    blurb:
+      "A lightweight, searchable clipboard manager with persistent SQLite storage and global shortcuts.",
+    icon: "clipboard",
+    accent: "sky",
+  },
+  {
+    name: "EyuX AI - Workspace",
+    url: "https://apps.microsoft.com/detail/9NX5DBW6NHW1?hl=en-us&gl=US&ocid=pdpshare",
+    blurb: "An AI workspace focused on practical desktop productivity.",
+    icon: "workspace",
+    accent: "mint",
+  },
+  {
+    name: "ZenCapture",
+    url: "https://apps.microsoft.com/detail/9NVW8TKD5R33?hl=en-us&gl=US&ocid=pdpshare",
+    blurb: "A lightweight capture tool for daily ideas with screenshots.",
+    icon: "capture",
+    accent: "amber",
+  },
+];
+
 function SocialIcon({ icon }: { icon: SocialIconName }) {
   if (icon === "github") {
     return (
@@ -685,6 +989,100 @@ function CalendarIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3.5" y="5.5" width="17" height="15" rx="2.5" />
       <path d="M7 3.75v3.5M17 3.75v3.5M3.5 9.5h17M8 13h3M13 13h3M8 17h3" />
+    </svg>
+  );
+}
+
+function BuyMeCoffeeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 8.25h10.75a1.75 1.75 0 0 1 1.75 1.75v1.25a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4v-3z" />
+      <path d="M15.75 9h1.5a2.75 2.75 0 1 1 0 5.5H16.5" />
+      <path d="M7 5.25c.5-.75 1.1-1.5 2-2m3 .5c.55-.65 1.05-1.2 1.75-1.75M7.5 19h9" />
+    </svg>
+  );
+}
+
+function MicrosoftStoreIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 4.3 10.5 3v8H3V4.3Zm10.5-1.55L21 1.5V11h-7.5V2.75ZM3 13h7.5v8L3 19.7V13Zm10.5 0H21v9.5L13.5 21v-8Z" />
+    </svg>
+  );
+}
+
+function DeveloperAppIcon({
+  icon,
+}: {
+  icon: DeveloperApp["icon"];
+}) {
+  if (icon === "clipboard") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5v1H9v-1Z" />
+        <path d="M8 6.5h8A2.5 2.5 0 0 1 18.5 9v9A2.5 2.5 0 0 1 16 20.5H8A2.5 2.5 0 0 1 5.5 18V9A2.5 2.5 0 0 1 8 6.5Z" />
+        <path d="M9 11.25h6M9 15.25h4.5" />
+      </svg>
+    );
+  }
+
+  if (icon === "workspace") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4.5 6.5h15v11h-15z" />
+        <path d="M4.5 10.5h15M10 6.5v11" />
+        <path d="m16.75 3.1.62 1.68 1.68.62-1.68.62-.62 1.68-.62-1.68-1.68-.62 1.68-.62.62-1.68Z" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 5.5H6.5A1.5 1.5 0 0 0 5 7v1.5M16 5.5h1.5A1.5 1.5 0 0 1 19 7v1.5M8 18.5H6.5A1.5 1.5 0 0 1 5 17v-1.5M16 18.5h1.5A1.5 1.5 0 0 0 19 17v-1.5" />
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M16.9 8.1h.01" />
+    </svg>
+  );
+}
+
+function SearchLensIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <defs>
+        <linearGradient id="search-lens-stroke" x1="5" y1="4.5" x2="18.5" y2="19" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#86e8ff" />
+          <stop offset="0.52" stopColor="#2b95ff" />
+          <stop offset="1" stopColor="#2e63ff" />
+        </linearGradient>
+        <radialGradient
+          id="search-lens-fill"
+          cx="0"
+          cy="0"
+          r="1"
+          gradientUnits="userSpaceOnUse"
+          gradientTransform="translate(9.3 8.3) rotate(45) scale(7.8)"
+        >
+          <stop offset="0" stopColor="#b8ebff" stopOpacity="0.4" />
+          <stop offset="0.46" stopColor="#67bfff" stopOpacity="0.14" />
+          <stop offset="1" stopColor="#2e63ff" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <circle cx="10" cy="10" r="5.55" fill="url(#search-lens-fill)" />
+      <circle
+        cx="10"
+        cy="10"
+        r="5.55"
+        fill="none"
+        stroke="url(#search-lens-stroke)"
+        strokeWidth="2.35"
+      />
+      <path
+        d="M14.45 14.45L19.15 19.15"
+        fill="none"
+        stroke="url(#search-lens-stroke)"
+        strokeLinecap="round"
+        strokeWidth="2.55"
+      />
     </svg>
   );
 }
@@ -880,6 +1278,66 @@ function basenameFromPath(path: string): string {
   return normalized.slice(lastSlash + 1).trim();
 }
 
+function parentDirectoryFromPath(path: string): string {
+  const normalized = path.replace(/\//g, "\\").trim();
+  const lastSlash = normalized.lastIndexOf("\\");
+  if (lastSlash <= 0) {
+    return normalized;
+  }
+  return normalized.slice(0, lastSlash);
+}
+
+function extensionFromName(name: string): string {
+  const trimmed = name.trim();
+  const dotIndex = trimmed.lastIndexOf(".");
+  if (dotIndex <= 0 || dotIndex === trimmed.length - 1) {
+    return "";
+  }
+  return trimmed.slice(dotIndex + 1).toLowerCase();
+}
+
+function resultDisplayName(result: SearchResult): string {
+  return result.name.trim() || basenameFromPath(result.path) || "(unnamed file)";
+}
+
+function resultFilenameWithoutExtension(result: SearchResult): string {
+  const displayName = resultDisplayName(result);
+  if (result.isDirectory) {
+    return displayName;
+  }
+  const dotIndex = displayName.lastIndexOf(".");
+  if (dotIndex <= 0) {
+    return displayName;
+  }
+  return displayName.slice(0, dotIndex);
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof document === "undefined") {
+    throw new Error("Clipboard access is not available.");
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error("Clipboard copy failed.");
+  }
+}
+
 function categoryFromExtension(extension: string): ResultViewTab {
   const ext = extension.trim().toLowerCase();
   if (!ext) {
@@ -1058,10 +1516,18 @@ function isThemePresetId(value: string | null): value is ThemePresetId {
   return value !== null && THEME_PRESET_IDS.includes(value as ThemePresetId);
 }
 
+function normalizeThemePresetId(value: string | null): ThemePresetId | null {
+  if (value === "graphite") {
+    return "slate-glass";
+  }
+
+  return isThemePresetId(value) ? value : null;
+}
+
 function themePresetById(id: ThemePresetId): ThemePreset {
   return (
     THEME_PRESETS.find((preset) => preset.id === id) ??
-    THEME_PRESETS.find((preset) => preset.id === "slate") ??
+    THEME_PRESETS.find((preset) => preset.id === DEFAULT_THEME_PRESET) ??
     THEME_PRESETS[0]
   );
 }
@@ -1078,6 +1544,38 @@ function themePreviewStyle(preview: ThemePreviewSwatch): CSSProperties {
   } as CSSProperties;
 }
 
+function formatShortcutLabel(value: string): string {
+  return value
+    .split("+")
+    .map((segment) => {
+      const part = segment.trim();
+      if (!part) {
+        return "";
+      }
+      if (/^key[a-z]$/i.test(part)) {
+        return part.slice(3).toUpperCase();
+      }
+      if (/^digit\d$/i.test(part)) {
+        return part.slice(5);
+      }
+      if (/^meta$/i.test(part)) {
+        return "Win";
+      }
+      if (/^control$/i.test(part) || /^ctrl$/i.test(part)) {
+        return "Ctrl";
+      }
+      if (/^alt$/i.test(part)) {
+        return "Alt";
+      }
+      if (/^shift$/i.test(part)) {
+        return "Shift";
+      }
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .filter((part) => part.length > 0)
+    .join("+");
+}
+
 function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window === "undefined") {
@@ -1091,13 +1589,14 @@ function App() {
   });
   const [themePreset, setThemePreset] = useState<ThemePresetId>(() => {
     if (typeof window === "undefined") {
-      return "slate";
+      return DEFAULT_THEME_PRESET;
     }
     const saved = window.localStorage.getItem(THEME_PRESET_STORAGE_KEY);
-    if (isThemePresetId(saved)) {
-      return saved;
+    const normalizedPreset = normalizeThemePresetId(saved);
+    if (normalizedPreset) {
+      return normalizedPreset;
     }
-    return "slate";
+    return DEFAULT_THEME_PRESET;
   });
   const [status, setStatus] = useState<IndexStatus>({
     indexing: false,
@@ -1121,6 +1620,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("search");
   const [duplicateMinSizeMb, setDuplicateMinSizeMb] = useState("50");
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
@@ -1138,8 +1638,19 @@ function App() {
   const [duplicateDeleteCandidate, setDuplicateDeleteCandidate] =
     useState<DuplicateDeleteCandidate | null>(null);
   const [duplicateDeleteBusy, setDuplicateDeleteBusy] = useState(false);
+  const [duplicateDeleteToRecycleBin, setDuplicateDeleteToRecycleBin] = useState(false);
+  const [searchResultContextMenu, setSearchResultContextMenu] =
+    useState<SearchResultContextMenuState | null>(null);
+  const [searchResultRenameDraft, setSearchResultRenameDraft] =
+    useState<SearchResultRenameDraft | null>(null);
+  const [searchResultRenameBusy, setSearchResultRenameBusy] = useState(false);
+  const [searchResultDeleteCandidate, setSearchResultDeleteCandidate] =
+    useState<SearchResultDeleteCandidate | null>(null);
+  const [searchResultDeleteBusy, setSearchResultDeleteBusy] = useState(false);
+  const [searchResultDeleteToRecycleBin, setSearchResultDeleteToRecycleBin] = useState(false);
   const [resultView, setResultView] = useState<ResultViewTab>("all");
   const [resultSort, setResultSort] = useState<ResultSortMode>("relevance");
+  const [windowMode, setWindowMode] = useState<WindowMode>("full");
   const [showPreviews, setShowPreviews] = useState<boolean>(() => {
     if (typeof window === "undefined") {
       return true;
@@ -1180,18 +1691,45 @@ function App() {
   const [searchLimitInput, setSearchLimitInput] = useState<string>(() =>
     String(defaultSearchLimit),
   );
-  const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [searchLimitError, setSearchLimitError] = useState<string | null>(null);
+  const [searchLimitMessage, setSearchLimitMessage] = useState<string | null>(null);
+  const [desktopSettings, setDesktopSettings] =
+    useState<DesktopSettings>(DEFAULT_DESKTOP_SETTINGS);
+  const [desktopSettingsDraft, setDesktopSettingsDraft] =
+    useState<DesktopSettings>(DEFAULT_DESKTOP_SETTINGS);
+  const [desktopSettingsLoading, setDesktopSettingsLoading] = useState(true);
+  const [desktopSettingsSaving, setDesktopSettingsSaving] = useState(false);
+  const [desktopSettingsError, setDesktopSettingsError] = useState<string | null>(null);
+  const [desktopSettingsMessage, setDesktopSettingsMessage] = useState<string | null>(null);
+  const [selectedResultKey, setSelectedResultKey] = useState<string | null>(null);
   const [previewSourceState, setPreviewSourceState] = useState<Record<string, number>>({});
   const [previewReadyState, setPreviewReadyState] = useState<Record<string, true>>({});
   const [previewDataUrls, setPreviewDataUrls] = useState<Record<string, string>>({});
+  const [selectedPreviewSourceIndex, setSelectedPreviewSourceIndex] = useState<number>(0);
+  const [selectedPreviewReadyState, setSelectedPreviewReadyState] = useState<Record<string, true>>({});
   const [appVersion, setAppVersion] = useState<string>("");
   const previousIndexedCountRef = useRef<number | null>(null);
   const indexSyncTimeoutRef = useRef<number | null>(null);
   const duplicateNoticeTimeoutRef = useRef<number | null>(null);
+  const actionNoticeTimeoutRef = useRef<number | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const createdAfterInputRef = useRef<HTMLInputElement | null>(null);
   const createdBeforeInputRef = useRef<HTMLInputElement | null>(null);
+  const searchResultContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const searchResultRenameInputRef = useRef<HTMLInputElement | null>(null);
   const activeThemePreset = themePresetById(themePreset);
+  const isQuickMode = windowMode === "quick";
+  const formattedDesktopShortcut = formatShortcutLabel(
+    desktopSettings.shortcut || DEFAULT_DESKTOP_SETTINGS.shortcut,
+  );
+  const currentShortcutLabel = desktopSettings.shortcutEnabled
+    ? `Hotkey: ${formattedDesktopShortcut}`
+    : "Hotkey off";
+  const quickIndexScopeLabel = includeAllDrives ? "Index: all drives" : `Index: ${selectedDrive}:`;
+  const desktopSettingsDirty =
+    desktopSettings.backgroundModeEnabled !== desktopSettingsDraft.backgroundModeEnabled ||
+    desktopSettings.shortcutEnabled !== desktopSettingsDraft.shortcutEnabled ||
+    desktopSettings.shortcut.trim() !== desktopSettingsDraft.shortcut.trim();
 
   const hasFilters =
     extension.trim().length > 0 ||
@@ -1204,19 +1742,6 @@ function App() {
     maxSizeMb.trim().length > 0 ||
     createdAfter.length > 0 ||
     createdBefore.length > 0;
-
-  const selectedDriveInfo = drives.find((drive) => drive.letter === selectedDrive);
-  const hasAnyFallbackDrive = useMemo(
-    () => drives.some((drive) => drive.isNtfs && !drive.canOpenVolume),
-    [drives],
-  );
-  const isSelectedDriveFallback = Boolean(
-    selectedDriveInfo && selectedDriveInfo.isNtfs && !selectedDriveInfo.canOpenVolume,
-  );
-  const isFallbackModeActive = includeAllDrives ? hasAnyFallbackDrive : isSelectedDriveFallback;
-  const fallbackModeMessage = includeAllDrives
-    ? "Running in fallback mode on one or more drives. Indexing still works, but it is slower and live updates are limited. Run OmniSearch as administrator for best performance."
-    : "Running in fallback mode on this drive. Indexing still works, but it is slower and live updates are limited. Run OmniSearch as administrator for best performance.";
   const visibleStatusError =
     status.lastError && status.lastError.toLowerCase().includes(DUPLICATE_CANCEL_MESSAGE.toLowerCase())
       ? null
@@ -1287,6 +1812,18 @@ function App() {
     () => visibleResults.reduce((sum, result) => sum + result.size, 0),
     [visibleResults],
   );
+  const selectedResult = useMemo(() => {
+    if (visibleResults.length === 0) {
+      return null;
+    }
+    return visibleResults.find((result) => rowKeyForResult(result) === selectedResultKey) ?? visibleResults[0];
+  }, [selectedResultKey, visibleResults]);
+  const previewLoadCandidates = useMemo(() => {
+    if (!showPreviews || !selectedResult) {
+      return [];
+    }
+    return [selectedResult].slice(0, PREVIEW_DATA_URL_LIMIT);
+  }, [selectedResult, showPreviews]);
 
   const duplicateStats = useMemo(() => {
     let totalFiles = 0;
@@ -1315,6 +1852,12 @@ function App() {
     }
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
     window.localStorage.setItem(THEME_PRESET_STORAGE_KEY, themePreset);
+    const nativeBackground = palette["--bg-deep"] ?? palette["--surface-strong"];
+    const titleBarColor = palette["--bg-deep"] ?? nativeBackground;
+    const titleBarTextColor = palette["--text-main"];
+    void syncNativeWindowTheme(themeMode, nativeBackground, titleBarColor, titleBarTextColor).catch(() => {
+      // Ignore native window sync failures outside the desktop shell.
+    });
   }, [activeThemePreset, themeMode, themePreset]);
 
   useEffect(() => {
@@ -1347,13 +1890,58 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const suppressContextMenu = (event: MouseEvent) => {
-      event.preventDefault();
+    let active = true;
+
+    const loadDesktopBehavior = async () => {
+      try {
+        const settings = await getDesktopSettings();
+        if (!active) {
+          return;
+        }
+        setDesktopSettings(settings);
+        setDesktopSettingsDraft(settings);
+        setDesktopSettingsError(null);
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+        setDesktopSettings(DEFAULT_DESKTOP_SETTINGS);
+        setDesktopSettingsDraft(DEFAULT_DESKTOP_SETTINGS);
+        setDesktopSettingsError(`Failed to load desktop settings: ${String(error)}`);
+      } finally {
+        if (active) {
+          setDesktopSettingsLoading(false);
+        }
+      }
     };
 
-    window.addEventListener("contextmenu", suppressContextMenu, true);
+    void loadDesktopBehavior();
+
     return () => {
-      window.removeEventListener("contextmenu", suppressContextMenu, true);
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void listenForWindowMode((mode) => {
+      setWindowMode(mode);
+      setActiveTab("search");
+    }).then((dispose) => {
+      if (cancelled) {
+        dispose();
+        return;
+      }
+      unlisten = dispose;
+    });
+
+    return () => {
+      cancelled = true;
+      if (unlisten) {
+        unlisten();
+      }
     };
   }, []);
 
@@ -1417,6 +2005,98 @@ function App() {
   }, [defaultSearchLimit]);
 
   useEffect(() => {
+    if (visibleResults.length === 0) {
+      setSelectedResultKey(null);
+      return;
+    }
+
+    if (!selectedResultKey) {
+      setSelectedResultKey(rowKeyForResult(visibleResults[0]));
+      return;
+    }
+
+    const hasSelection = visibleResults.some((result) => rowKeyForResult(result) === selectedResultKey);
+    if (!hasSelection) {
+      setSelectedResultKey(rowKeyForResult(visibleResults[0]));
+    }
+  }, [selectedResultKey, visibleResults]);
+
+  useEffect(() => {
+    setSearchResultContextMenu(null);
+    if (activeTab !== "search") {
+      setSearchResultRenameDraft(null);
+      setSearchResultDeleteCandidate(null);
+    }
+  }, [activeTab, results]);
+
+  useEffect(() => {
+    if (!searchResultContextMenu) {
+      return;
+    }
+
+    const dismissContextMenu = () => {
+      setSearchResultContextMenu(null);
+    };
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const menu = searchResultContextMenuRef.current;
+      if (menu && menu.contains(event.target as Node)) {
+        return;
+      }
+      dismissContextMenu();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        dismissContextMenu();
+      }
+    };
+
+    window.addEventListener("mousedown", handlePointerDown, true);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", dismissContextMenu);
+    window.addEventListener("scroll", dismissContextMenu, true);
+
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown, true);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", dismissContextMenu);
+      window.removeEventListener("scroll", dismissContextMenu, true);
+    };
+  }, [searchResultContextMenu]);
+
+  useEffect(() => {
+    if (!searchResultRenameDraft) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const input = searchResultRenameInputRef.current;
+      if (!input) {
+        return;
+      }
+      input.focus();
+      input.select();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [searchResultRenameDraft]);
+
+  useEffect(() => {
+    if (!duplicateDeleteCandidate) {
+      setDuplicateDeleteToRecycleBin(false);
+    }
+  }, [duplicateDeleteCandidate]);
+
+  useEffect(() => {
+    if (!searchResultDeleteCandidate) {
+      setSearchResultDeleteToRecycleBin(false);
+    }
+  }, [searchResultDeleteCandidate]);
+
+  useEffect(() => {
     setSearchLimit(defaultSearchLimit);
   }, [trimmedQuery, extension, minSizeMb, maxSizeMb, createdAfter, createdBefore, hasFilters, defaultSearchLimit]);
 
@@ -1427,13 +2107,35 @@ function App() {
   }, [results, showPreviews]);
 
   useEffect(() => {
-    if (!showPreviews || visibleResults.length === 0) {
+    const selectedKey = showPreviews && selectedResult ? rowKeyForResult(selectedResult) : "";
+
+    setPreviewDataUrls((previous) => {
+      if (!selectedKey) {
+        return Object.keys(previous).length === 0 ? previous : {};
+      }
+
+      const current = previous[selectedKey];
+      if (!current) {
+        return Object.keys(previous).length === 0 ? previous : {};
+      }
+
+      return Object.keys(previous).length === 1 && previous[selectedKey]
+        ? previous
+        : { [selectedKey]: current };
+    });
+  }, [selectedResult, showPreviews]);
+
+  useEffect(() => {
+    setSelectedPreviewSourceIndex(0);
+    setSelectedPreviewReadyState({});
+  }, [selectedResultKey, showPreviews]);
+
+  useEffect(() => {
+    if (!showPreviews || previewLoadCandidates.length === 0) {
       return;
     }
 
-    const candidates = visibleResults
-      .slice(0, PREVIEW_PREFETCH_LIMIT)
-      .filter((result) => previewKindFromResult(result) !== "none");
+    const candidates = previewLoadCandidates.filter((result) => previewKindFromResult(result) !== "none");
     if (candidates.length === 0) {
       return;
     }
@@ -1475,7 +2177,23 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [showPreviews, visibleResults, previewDataUrls]);
+  }, [showPreviews, previewDataUrls, previewLoadCandidates]);
+
+  useEffect(() => {
+    if (activeTab !== "search") {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      if (searchInputRef.current) {
+        searchInputRef.current.focus();
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [activeTab, windowMode]);
 
   useEffect(() => {
     let active = true;
@@ -1653,12 +2371,21 @@ function App() {
   }, [status.ready, status.indexing, status.indexedCount]);
 
   useEffect(() => {
+    if (actionError) {
+      setActionNotice(null);
+    }
+  }, [actionError]);
+
+  useEffect(() => {
     return () => {
       if (indexSyncTimeoutRef.current !== null) {
         window.clearTimeout(indexSyncTimeoutRef.current);
       }
       if (duplicateNoticeTimeoutRef.current !== null) {
         window.clearTimeout(duplicateNoticeTimeoutRef.current);
+      }
+      if (actionNoticeTimeoutRef.current !== null) {
+        window.clearTimeout(actionNoticeTimeoutRef.current);
       }
     };
   }, []);
@@ -1787,8 +2514,8 @@ function App() {
   function applySearchLimitPreference(): void {
     const parsed = Number(searchLimitInput.trim());
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      setSettingsError(`Enter a valid number between ${SEARCH_LIMIT_MIN} and ${SEARCH_LIMIT_MAX}.`);
-      setSettingsMessage(null);
+      setSearchLimitError(`Enter a valid number between ${SEARCH_LIMIT_MIN} and ${SEARCH_LIMIT_MAX}.`);
+      setSearchLimitMessage(null);
       return;
     }
 
@@ -1796,22 +2523,51 @@ function App() {
     setDefaultSearchLimit(normalized);
     setSearchLimit(normalized);
     setSearchLimitInput(String(normalized));
-    setSettingsError(null);
+    setSearchLimitError(null);
     if (normalized !== parsed) {
-      setSettingsMessage(
+      setSearchLimitMessage(
         `Saved. Adjusted to ${normalized.toLocaleString()} to keep the allowed range.`,
       );
       return;
     }
-    setSettingsMessage(`Saved. New searches now start with ${normalized.toLocaleString()} results.`);
+    setSearchLimitMessage(`Saved. New searches now start with ${normalized.toLocaleString()} results.`);
   }
 
   function resetSearchLimitPreference(): void {
     setDefaultSearchLimit(SEARCH_LIMIT);
     setSearchLimit(SEARCH_LIMIT);
     setSearchLimitInput(String(SEARCH_LIMIT));
-    setSettingsError(null);
-    setSettingsMessage(`Reset to default: ${SEARCH_LIMIT.toLocaleString()} results.`);
+    setSearchLimitError(null);
+    setSearchLimitMessage(`Reset to default: ${SEARCH_LIMIT.toLocaleString()} results.`);
+  }
+
+  async function saveDesktopBehaviorSettings(): Promise<void> {
+    const normalizedShortcut =
+      desktopSettingsDraft.shortcut.trim() || DEFAULT_DESKTOP_SETTINGS.shortcut;
+    const nextSettings: DesktopSettings = {
+      backgroundModeEnabled: desktopSettingsDraft.backgroundModeEnabled,
+      shortcutEnabled: desktopSettingsDraft.shortcutEnabled,
+      shortcut: normalizedShortcut,
+    };
+
+    setDesktopSettingsSaving(true);
+    setDesktopSettingsError(null);
+    setDesktopSettingsMessage(null);
+
+    try {
+      const savedSettings = await updateDesktopSettings(nextSettings);
+      setDesktopSettings(savedSettings);
+      setDesktopSettingsDraft(savedSettings);
+      setDesktopSettingsMessage(
+        savedSettings.shortcutEnabled
+          ? `Saved. ${savedSettings.shortcut} is active immediately.`
+          : "Saved. The global shortcut is now disabled.",
+      );
+    } catch (error) {
+      setDesktopSettingsError(`Failed to save desktop settings: ${String(error)}`);
+    } finally {
+      setDesktopSettingsSaving(false);
+    }
   }
 
   async function findDuplicates(): Promise<void> {
@@ -1924,6 +2680,8 @@ function App() {
     try {
       const deleted = await invoke<boolean>("delete_path", {
         path: duplicateDeleteCandidate.path,
+        recycleBin: duplicateDeleteToRecycleBin,
+        recycle_bin: duplicateDeleteToRecycleBin,
       });
       if (deleted) {
         removeDuplicateFromState(
@@ -1963,6 +2721,196 @@ function App() {
       setDuplicateNotice(null);
       duplicateNoticeTimeoutRef.current = null;
     }, DUPLICATE_NOTICE_TIMEOUT_MS);
+  }
+
+  function closeSearchResultContextMenu(): void {
+    setSearchResultContextMenu(null);
+  }
+
+  function removeSearchResultFromState(path: string): void {
+    setResults((previous) => previous.filter((result) => result.path !== path));
+    setPreviewSourceState({});
+    setPreviewReadyState({});
+    setPreviewDataUrls({});
+  }
+
+  function renameSearchResultInState(oldPath: string, nextPath: string, nextName: string): void {
+    let nextSelectedKey: string | null = null;
+
+    setResults((previous) =>
+      previous.map((result) => {
+        if (result.path !== oldPath) {
+          return result;
+        }
+        const updatedResult: SearchResult = {
+          ...result,
+          name: nextName,
+          path: nextPath,
+          extension: extensionFromName(nextName),
+        };
+        nextSelectedKey = rowKeyForResult(updatedResult);
+        return updatedResult;
+      }),
+    );
+
+    if (nextSelectedKey) {
+      setSelectedResultKey(nextSelectedKey);
+    }
+    setPreviewSourceState({});
+    setPreviewReadyState({});
+    setPreviewDataUrls({});
+  }
+
+  function showActionNotice(message: string): void {
+    setActionNotice(message);
+    if (actionNoticeTimeoutRef.current !== null) {
+      window.clearTimeout(actionNoticeTimeoutRef.current);
+    }
+    actionNoticeTimeoutRef.current = window.setTimeout(() => {
+      setActionNotice(null);
+      actionNoticeTimeoutRef.current = null;
+    }, ACTION_NOTICE_TIMEOUT_MS);
+  }
+
+  async function handleSearchResultCopy(text: string, label: string): Promise<void> {
+    try {
+      await copyTextToClipboard(text);
+      setActionError(null);
+      showActionNotice(`${label} copied.`);
+    } catch (error) {
+      setActionError(`Failed to copy ${label}: ${String(error)}`);
+    }
+  }
+
+  async function openResultPath(path: string): Promise<void> {
+    const parentPath = parentDirectoryFromPath(path);
+    if (!parentPath || parentPath === path) {
+      await revealResult(path);
+      return;
+    }
+    await openResult(parentPath);
+  }
+
+  function openSearchResultContextMenu(
+    event: ReactMouseEvent<HTMLLIElement>,
+    result: SearchResult,
+    rowKey: string,
+  ): void {
+    if (hasSelectedText()) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (result.isDirectory) {
+      return;
+    }
+    if (isQuickMode) {
+      setSelectedResultKey(rowKey);
+    }
+    setSearchResultContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      rowKey,
+      result,
+    });
+  }
+
+  function openSearchResultRename(result: SearchResult, rowKey: string): void {
+    closeSearchResultContextMenu();
+    const currentName = resultDisplayName(result);
+    setSearchResultRenameDraft({
+      rowKey,
+      path: result.path,
+      currentName,
+      nextName: currentName,
+    });
+  }
+
+  function openSearchResultDelete(result: SearchResult, rowKey: string): void {
+    closeSearchResultContextMenu();
+    setSearchResultDeleteToRecycleBin(false);
+    setSearchResultDeleteCandidate({
+      rowKey,
+      path: result.path,
+      name: resultDisplayName(result),
+    });
+  }
+
+  async function startNativeSearchResultDrag(path: string): Promise<void> {
+    try {
+      await invoke("start_native_file_drag", { path });
+      setActionError(null);
+    } catch (error) {
+      setActionError(`Failed to drag file: ${String(error)}`);
+    }
+  }
+
+  async function confirmSearchResultRename(): Promise<void> {
+    if (!searchResultRenameDraft || searchResultRenameBusy) {
+      return;
+    }
+
+    const nextName = searchResultRenameDraft.nextName.trim();
+    if (!nextName) {
+      setActionError("Rename failed: name cannot be empty.");
+      return;
+    }
+
+    setSearchResultRenameBusy(true);
+    try {
+      const nextPath = await invoke<string>("rename_path", {
+        path: searchResultRenameDraft.path,
+        newName: nextName,
+        new_name: nextName,
+      });
+      renameSearchResultInState(searchResultRenameDraft.path, nextPath, nextName);
+      setSearchResultRenameDraft(null);
+      setActionError(null);
+    } catch (error) {
+      setActionError(`Failed to rename item: ${String(error)}`);
+    } finally {
+      setSearchResultRenameBusy(false);
+    }
+  }
+
+  async function confirmSearchResultDelete(): Promise<void> {
+    if (!searchResultDeleteCandidate || searchResultDeleteBusy) {
+      return;
+    }
+
+    setSearchResultDeleteBusy(true);
+    try {
+      const deleted = await invoke<boolean>("delete_path", {
+        path: searchResultDeleteCandidate.path,
+        recycleBin: searchResultDeleteToRecycleBin,
+        recycle_bin: searchResultDeleteToRecycleBin,
+      });
+      if (deleted) {
+        removeSearchResultFromState(searchResultDeleteCandidate.path);
+        setSearchResultDeleteCandidate(null);
+        setActionError(null);
+      }
+    } catch (error) {
+      setActionError(`Failed to delete item: ${String(error)}`);
+    } finally {
+      setSearchResultDeleteBusy(false);
+    }
+  }
+
+  function handleSearchResultDragStart(
+    event: ReactDragEvent<HTMLLIElement>,
+    result: SearchResult,
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (result.isDirectory) {
+      return;
+    }
+
+    closeSearchResultContextMenu();
+    void startNativeSearchResultDrag(result.path);
   }
 
   async function revealResult(path: string): Promise<void> {
@@ -2028,6 +2976,28 @@ function App() {
     });
   }
 
+  function handleSelectedPreviewError(sourceCount: number): void {
+    setSelectedPreviewSourceIndex((currentIndex) => {
+      if (currentIndex < 0) {
+        return currentIndex;
+      }
+      const nextIndex = currentIndex + 1;
+      return nextIndex < sourceCount ? nextIndex : -1;
+    });
+  }
+
+  function handleSelectedPreviewReady(previewKey: string): void {
+    setSelectedPreviewReadyState((previous) => {
+      if (previous[previewKey]) {
+        return previous;
+      }
+      return {
+        ...previous,
+        [previewKey]: true,
+      };
+    });
+  }
+
   const statusText = status.indexing
     ? `Indexing ${status.indexedCount.toLocaleString()} items...`
     : indexSyncing
@@ -2056,13 +3026,92 @@ function App() {
     results.length > 0 &&
     results.length >= searchLimit &&
     searchLimit < SEARCH_LIMIT_MAX;
+  const selectedResultRowKey = selectedResult ? rowKeyForResult(selectedResult) : "";
+  const selectedResultIsDirectory = selectedResult?.isDirectory ?? false;
+  const selectedResultExtension = selectedResult ? normalizedExtension(selectedResult) : "";
+  const selectedResultShortType = selectedResult
+    ? selectedResultIsDirectory
+      ? "DIR"
+      : (selectedResultExtension || "file").slice(0, 2).toUpperCase()
+    : "??";
+  const selectedResultExtensionLabel = selectedResult
+    ? selectedResultIsDirectory
+      ? "folder"
+      : selectedResultExtension
+        ? `.${selectedResultExtension}`
+        : "file"
+    : "";
+  const selectedPreviewKind = selectedResult && showPreviews ? previewKindFromResult(selectedResult) : "none";
+  const selectedPreviewSources =
+    selectedResult && selectedPreviewKind !== "none"
+      ? [
+          ...(previewDataUrls[selectedResultRowKey] ? [previewDataUrls[selectedResultRowKey]] : []),
+          ...previewSourcesFromPath(selectedResult.path),
+        ].filter((source, index, all) => source.length > 0 && all.indexOf(source) === index)
+      : [];
+  const selectedPreviewIndex = selectedResult ? selectedPreviewSourceIndex : 0;
+  const selectedPreviewFailed = selectedPreviewIndex < 0;
+  const selectedPreviewRenderKey = selectedResult
+    ? `${selectedResultRowKey}:${selectedPreviewIndex}:${selectedPreviewKind}:selected`
+    : "";
+  const selectedPreviewReady = Boolean(
+    selectedPreviewRenderKey && selectedPreviewReadyState[selectedPreviewRenderKey],
+  );
+  const selectedPreviewSrc =
+    !selectedPreviewFailed && selectedPreviewKind !== "none"
+      ? (selectedPreviewSources[selectedPreviewIndex] ?? "")
+      : "";
+  const hasSelectedPreview = selectedPreviewSrc.length > 0;
+  const showQuickInlineSearching = isQuickMode && loading && hasSearchRequest;
+  const showQuickEmptyState = isQuickMode && visibleResults.length === 0 && !showQuickInlineSearching;
+  const quickPreviewEmptyTitle = searchError
+    ? "Search couldn't finish"
+    : showQuickEmptyState
+      ? trimmedQuery || hasFilters
+        ? "No files match the current filters"
+        : "Start typing to search indexed files"
+      : "Pick a result to preview";
+  const quickPreviewEmptyDetail = searchError
+    ? "Check the message above and try again."
+    : showQuickEmptyState && (trimmedQuery || hasFilters)
+      ? "Try another search or adjust the filters."
+      : "";
+  const activeSearchResultMenu = searchResultContextMenu?.result ?? null;
+  const searchResultContextMenuStyle = searchResultContextMenu
+    ? ({
+        left: `${Math.max(
+          12,
+          Math.min(
+            searchResultContextMenu.x,
+            (typeof window !== "undefined" ? window.innerWidth : searchResultContextMenu.x + 260) -
+              272,
+          ),
+        )}px`,
+        top: `${Math.max(
+          12,
+          Math.min(
+            searchResultContextMenu.y,
+            (typeof window !== "undefined" ? window.innerHeight : searchResultContextMenu.y + 320) -
+              332,
+          ),
+        )}px`,
+      } as CSSProperties)
+    : undefined;
 
   return (
-    <div className="app-shell">
-      <main className="spotlight-panel">
-        <header className="panel-header">
-          <h1>OmniSearch</h1>
-          <div className="header-tools">
+    <div className={`app-shell ${isQuickMode ? "quick-window-mode" : ""}`}>
+      <main className={`spotlight-panel ${isQuickMode ? "spotlight-panel-quick" : ""}`}>
+        <header className={`panel-header ${isQuickMode ? "quick-panel-header" : ""}`}>
+          <div className="panel-title-block">
+            {isQuickMode ? <span className="quick-mode-badge">Quick Window</span> : null}
+            <h1>OmniSearch</h1>
+            {isQuickMode ? (
+              <p className="panel-subtitle">
+                Jump back to the full workspace when you need deeper controls.
+              </p>
+            ) : null}
+          </div>
+          <div className={`header-tools ${isQuickMode ? "quick-header-tools" : ""}`}>
             <button
               type="button"
               className="theme-toggle"
@@ -2073,108 +3122,156 @@ function App() {
               <span className="theme-toggle-dot" aria-hidden="true" />
               <span>{themeMode === "dark" ? "Light mode" : "Dark mode"}</span>
             </button>
-            <label className="drive-picker" htmlFor="drive-picker">
-              <span>Drive</span>
-              <select
-                id="drive-picker"
-                value={selectedDrive}
-                disabled={includeAllDrives}
-                onChange={(event) => {
-                  setSelectedDrive(event.currentTarget.value);
-                }}
-              >
-                {drives
-                  .filter((drive) => drive.isNtfs)
-                  .map((drive) => (
-                    <option key={drive.letter} value={drive.letter}>
-                      {`${drive.letter}: (${drive.filesystem || "Unknown"})${drive.canOpenVolume ? "" : " - fallback mode"}`}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label
-              className="scan-switch"
-              htmlFor="all-drives-toggle"
-              title="Scan all NTFS drives before search. Uses more time and resources."
-            >
-              <input
-                id="all-drives-toggle"
-                type="checkbox"
-                checked={includeAllDrives}
-                onChange={(event) => {
-                  const nextIncludeAllDrives = event.currentTarget.checked;
-                  setIncludeAllDrives(nextIncludeAllDrives);
-                  void reindexWithConfig(includeFolders, nextIncludeAllDrives);
-                }}
-              />
-              <span className="scan-switch-slider" aria-hidden="true" />
-              <span>Scan all drives</span>
-            </label>
-            <label
-              className="scan-option"
-              htmlFor="include-folders-toggle"
-              title="Include folders in index."
-            >
-              <input
-                id="include-folders-toggle"
-                type="checkbox"
-                checked={includeFolders}
-                onChange={(event) => {
-                  const nextIncludeFolders = event.currentTarget.checked;
-                  setIncludeFolders(nextIncludeFolders);
-                  void reindexWithConfig(nextIncludeFolders, includeAllDrives);
-                }}
-              />
-              <span>Include folders</span>
-            </label>
-            <button type="button" className="ghost-button" onClick={reindex}>
-              Reindex
-            </button>
+            {isQuickMode ? (
+              <>
+                <span className="quick-index-indicator" title={`Current index scope: ${quickIndexScopeLabel}`}>
+                  {quickIndexScopeLabel}
+                </span>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    setWindowMode("full");
+                    setActiveTab("search");
+                    void openFullWindow().catch((error) => {
+                      setWindowMode("quick");
+                      setDesktopSettingsError(`Failed to open the full workspace: ${String(error)}`);
+                    });
+                  }}
+                >
+                  Full workspace
+                </button>
+              </>
+            ) : (
+              <>
+                <label className="drive-picker" htmlFor="drive-picker">
+                  <span>Drive</span>
+                  <select
+                    id="drive-picker"
+                    value={selectedDrive}
+                    disabled={includeAllDrives}
+                    onChange={(event) => {
+                      setSelectedDrive(event.currentTarget.value);
+                    }}
+                  >
+                    {drives
+                      .filter((drive) => drive.isNtfs)
+                      .map((drive) => (
+                        <option key={drive.letter} value={drive.letter}>
+                          {`${drive.letter}: (${drive.filesystem || "Unknown"})`}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label
+                  className="scan-switch"
+                  htmlFor="all-drives-toggle"
+                  title="Scan all NTFS drives before search. Uses more time and resources."
+                >
+                  <input
+                    id="all-drives-toggle"
+                    type="checkbox"
+                    checked={includeAllDrives}
+                    onChange={(event) => {
+                      const nextIncludeAllDrives = event.currentTarget.checked;
+                      setIncludeAllDrives(nextIncludeAllDrives);
+                      void reindexWithConfig(includeFolders, nextIncludeAllDrives);
+                    }}
+                  />
+                  <span className="scan-switch-slider" aria-hidden="true" />
+                  <span>Scan all drives</span>
+                </label>
+                <label
+                  className="scan-option"
+                  htmlFor="include-folders-toggle"
+                  title="Include folders in index."
+                >
+                  <input
+                    id="include-folders-toggle"
+                    type="checkbox"
+                    checked={includeFolders}
+                    onChange={(event) => {
+                      const nextIncludeFolders = event.currentTarget.checked;
+                      setIncludeFolders(nextIncludeFolders);
+                      void reindexWithConfig(nextIncludeFolders, includeAllDrives);
+                    }}
+                  />
+                  <span>Include folders</span>
+                </label>
+                <button type="button" className="ghost-button" onClick={reindex}>
+                  Reindex
+                </button>
+              </>
+            )}
           </div>
         </header>
 
-        <nav className="tab-row" aria-label="Main sections">
-          <button
-            type="button"
-            className={`tab ${activeTab === "search" ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveTab("search");
-            }}
-          >
-            Search
-          </button>
-          <button
-            type="button"
-            className={`tab ${activeTab === "duplicates" ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveTab("duplicates");
-            }}
-          >
-            Duplicates
-          </button>
-          <button
-            type="button"
-            className={`tab ${activeTab === "advanced" ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveTab("advanced");
-            }}
-          >
-            Advanced
-          </button>
-          <button
-            type="button"
-            className={`tab ${activeTab === "about" ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveTab("about");
-            }}
-          >
-            About
-          </button>
-        </nav>
+        {!isQuickMode ? (
+          <nav className="tab-row" aria-label="Main sections">
+            <button
+              type="button"
+              className={`tab ${activeTab === "search" ? "is-active" : ""}`}
+              onClick={() => {
+                setActiveTab("search");
+              }}
+            >
+              Search
+            </button>
+            <button
+              type="button"
+              className={`tab ${activeTab === "duplicates" ? "is-active" : ""}`}
+              onClick={() => {
+                setActiveTab("duplicates");
+              }}
+            >
+              Duplicates
+            </button>
+            <button
+              type="button"
+              className={`tab ${activeTab === "advanced" ? "is-active" : ""}`}
+              onClick={() => {
+                setActiveTab("advanced");
+              }}
+            >
+              Settings
+            </button>
+            <button
+              type="button"
+              className={`tab ${activeTab === "themes" ? "is-active" : ""}`}
+              onClick={() => {
+                setActiveTab("themes");
+              }}
+            >
+              Themes
+            </button>
+            <button
+              type="button"
+              className={`tab ${activeTab === "about" ? "is-active" : ""}`}
+              onClick={() => {
+                setActiveTab("about");
+              }}
+            >
+              About
+            </button>
+            <span className="tab-row-spacer" aria-hidden="true" />
+            <button
+              type="button"
+              className="ghost-button tab-row-action"
+              title="Open quick window"
+              onClick={() => {
+                void openQuickWindow().catch((error) => {
+                  setDesktopSettingsError(`Failed to open the quick window: ${String(error)}`);
+                });
+              }}
+            >
+              {currentShortcutLabel}
+            </button>
+          </nav>
+        ) : null}
 
         {activeTab === "search" ? (
-          <section className="tab-panel" aria-label="Search files">
-            <div className="status-row">
+          <section className={`tab-panel ${isQuickMode ? "quick-tab-panel" : ""}`} aria-label="Search files">
+            <div className={`status-row ${isQuickMode ? "quick-status-row" : ""}`}>
               <span
                 className={`status-dot ${
                   status.indexing || indexSyncing ? "live" : status.ready ? "ready" : "idle"
@@ -2185,18 +3282,23 @@ function App() {
 
             {visibleStatusError ? <p className="error-row">{visibleStatusError}</p> : null}
             {driveError ? <p className="error-row">{driveError}</p> : null}
-            {isFallbackModeActive ? <p className="warning-row">{fallbackModeMessage}</p> : null}
 
-            <input
-              className="search-input"
-              type="text"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="Type to search across indexed items..."
-              autoFocus
-            />
+            <div className={`search-input-shell ${isQuickMode ? "quick-search-input-shell" : ""}`}>
+              <span className="search-input-icon" aria-hidden="true">
+                <SearchLensIcon />
+              </span>
+              <input
+                ref={searchInputRef}
+                className={`search-input ${isQuickMode ? "quick-search-input" : ""}`}
+                type="text"
+                value={query}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                placeholder="Type to search across indexed items..."
+                autoFocus
+              />
+            </div>
 
-            <section className="filter-grid">
+            <section className={`filter-grid ${isQuickMode ? "quick-filter-grid" : ""}`}>
               <label>
                 Extension
                 <input
@@ -2272,8 +3374,8 @@ function App() {
               </label>
             </section>
 
-            <section className="results-panel">
-              <div className="results-toolbar">
+            <section className={`results-panel ${isQuickMode ? "quick-results-panel" : ""}`}>
+              <div className={`results-toolbar ${isQuickMode ? "quick-results-toolbar" : ""}`}>
                 <div className="results-scope-tabs" aria-label="Result categories">
                   {RESULT_VIEW_TABS.map((item) => (
                     <button
@@ -2338,164 +3440,339 @@ function App() {
               {loading ? <p className="hint compact-hint">Searching...</p> : null}
               {searchError ? <p className="error-row">{searchError}</p> : null}
               {actionError ? <p className="error-row">{actionError}</p> : null}
-              {!loading && !searchError && visibleResults.length === 0 && (trimmedQuery || hasFilters) ? (
+              {actionNotice ? <p className="info-row">{actionNotice}</p> : null}
+              {!isQuickMode &&
+              !loading &&
+              !searchError &&
+              visibleResults.length === 0 &&
+              (trimmedQuery || hasFilters) ? (
                 <p className="hint compact-hint">No items match the current filters.</p>
               ) : null}
 
-              <ul className="results-list">
-                {visibleResults.map((result) => {
-                  const rowKey = rowKeyForResult(result);
-                  const isDirectory = result.isDirectory;
-                  const normalizedExt = normalizedExtension(result);
-                  const shortType = isDirectory
-                    ? "DIR"
-                    : (normalizedExt || "file").slice(0, 2).toUpperCase();
-                  const extensionLabel = isDirectory
-                    ? "folder"
-                    : normalizedExt
-                      ? `.${normalizedExt}`
-                      : "file";
-                  const previewKind = showPreviews ? previewKindFromResult(result) : "none";
-                  const previewSources =
-                    previewKind !== "none"
-                      ? [
-                          ...(previewDataUrls[rowKey] ? [previewDataUrls[rowKey]] : []),
-                          ...previewSourcesFromPath(result.path),
-                        ].filter((source, index, all) => source.length > 0 && all.indexOf(source) === index)
-                      : [];
-                  const activePreviewIndex = previewSourceState[rowKey] ?? 0;
-                  const previewFailed = activePreviewIndex < 0;
-                  const previewRenderKey = `${rowKey}:${activePreviewIndex}:${previewKind}`;
-                  const previewReady = Boolean(previewReadyState[previewRenderKey]);
-                  const previewSrc =
-                    !previewFailed && previewKind !== "none"
-                      ? (previewSources[activePreviewIndex] ?? "")
-                      : "";
-                  const hasRenderablePreview = previewSrc.length > 0;
+              <div
+                className={
+                  isQuickMode
+                    ? `results-stage quick-results-stage ${showQuickEmptyState ? "is-empty" : ""}`
+                    : "results-stage"
+                }
+              >
+                <div
+                  className={`results-list-shell ${isQuickMode ? "quick-results-column" : ""} ${
+                    isQuickMode && canLoadMore ? "has-overlay-load-more" : ""
+                  }`}
+                >
+                  <ul className={`results-list ${isQuickMode ? "quick-results-list" : ""}`}>
+                    {visibleResults.map((result) => {
+                      const rowKey = rowKeyForResult(result);
+                      const isDirectory = result.isDirectory;
+                      const normalizedExt = normalizedExtension(result);
+                      const shortType = isDirectory
+                        ? "DIR"
+                        : (normalizedExt || "file").slice(0, 2).toUpperCase();
+                      const extensionLabel = isDirectory
+                        ? "folder"
+                        : normalizedExt
+                          ? `.${normalizedExt}`
+                          : "file";
+                      const previewKind = showPreviews ? previewKindFromResult(result) : "none";
+                      const previewSources =
+                        previewKind !== "none"
+                          ? previewSourcesFromPath(result.path).filter(
+                              (source, index, all) =>
+                                source.length > 0 && all.indexOf(source) === index,
+                            )
+                          : [];
+                      const activePreviewIndex = previewSourceState[rowKey] ?? 0;
+                      const previewFailed = activePreviewIndex < 0;
+                      const previewRenderKey = `${rowKey}:${activePreviewIndex}:${previewKind}`;
+                      const previewReady = Boolean(previewReadyState[previewRenderKey]);
+                      const previewSrc =
+                        !previewFailed && previewKind !== "none"
+                          ? (previewSources[activePreviewIndex] ?? "")
+                          : "";
+                      const hasRenderablePreview = previewSrc.length > 0;
+                      const canDragResultFile = !isDirectory;
 
-                  return (
-                    <li
-                      key={rowKey}
-                      className="result-row clickable"
-                      role="button"
-                      tabIndex={0}
-                      title="Click to reveal in folder, double-click to open"
-                      onClick={() => {
-                        if (hasSelectedText()) {
-                          return;
-                        }
-                        void revealResult(result.path);
-                      }}
-                      onDoubleClick={() => {
-                        if (hasSelectedText()) {
-                          return;
-                        }
-                        void openResult(result.path);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void openResult(result.path);
-                        } else if (event.key === " ") {
-                          event.preventDefault();
-                          void revealResult(result.path);
-                        }
-                      }}
-                    >
-                      {showPreviews ? (
-                        <div
-                          className={`result-preview ${previewKind} ${isDirectory ? "folder" : ""}`}
-                          aria-hidden="true"
-                        >
-                          <span className="preview-fallback">{shortType}</span>
-                          {hasRenderablePreview && previewKind === "image" ? (
-                            <img
-                              key={`${rowKey}:${activePreviewIndex}:image`}
-                              className={`preview-media ${previewReady ? "ready" : ""}`}
-                              src={previewSrc}
-                              alt=""
-                              loading="lazy"
-                              onLoad={() => {
-                                handlePreviewReady(previewRenderKey);
-                              }}
-                              onError={() => {
-                                handlePreviewError(rowKey, previewSources.length);
-                              }}
-                            />
-                          ) : null}
-                          {hasRenderablePreview && previewKind === "video" ? (
-                            <video
-                              key={`${rowKey}:${activePreviewIndex}:video`}
-                              className={`preview-media ${previewReady ? "ready" : ""}`}
-                              src={previewSrc}
-                              muted
-                              playsInline
-                              preload="metadata"
-                              onLoadedData={() => {
-                                handlePreviewReady(previewRenderKey);
-                              }}
-                              onError={() => {
-                                handlePreviewError(rowKey, previewSources.length);
-                              }}
-                            />
-                          ) : null}
-                          {hasRenderablePreview && previewKind === "pdf" ? (
-                            <iframe
-                              key={`${rowKey}:${activePreviewIndex}:pdf`}
-                              className={`preview-media ${previewReady ? "ready" : ""}`}
-                              src={`${previewSrc}#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`}
-                              title=""
-                              loading="lazy"
-                              onLoad={() => {
-                                handlePreviewReady(previewRenderKey);
-                              }}
-                              onError={() => {
-                                handlePreviewError(rowKey, previewSources.length);
-                              }}
-                            />
-                          ) : null}
-                        </div>
-                      ) : (
-                        <div className={`result-icon ${isDirectory ? "folder" : ""}`}>{shortType}</div>
-                      )}
-
-                      <div className="result-main">
-                        <strong>{highlightMatch(result.name, trimmedQuery)}</strong>
-                        <span>{highlightMatch(result.path, trimmedQuery)}</span>
-                      </div>
-                      <div className="result-meta">
-                        <span className="meta-chip">{extensionLabel}</span>
-                        <span className="meta-chip">{formatBytes(result.size)}</span>
-                        <span className="meta-chip">{formatUnix(result.createdUnix)}</span>
-                      </div>
-                      <div className="result-actions">
-                        <button
-                          type="button"
-                          className="row-action"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void openResult(result.path);
+                      return (
+                        <li
+                          key={rowKey}
+                          className={`result-row clickable ${isQuickMode ? "quick-result-row" : ""} ${
+                            isQuickMode && rowKey === selectedResultRowKey ? "is-selected" : ""
+                          } ${canDragResultFile ? "draggable-file" : ""}`}
+                          draggable={canDragResultFile}
+                          onDragStart={(event) => {
+                            handleSearchResultDragStart(event, result);
                           }}
-                        >
-                          Open
-                        </button>
-                        <button
-                          type="button"
-                          className="row-action"
-                          onClick={(event) => {
-                            event.stopPropagation();
+                          onContextMenu={(event) => {
+                            openSearchResultContextMenu(event, result, rowKey);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          title={
+                            isQuickMode
+                              ? "Click to select, double-click to open"
+                              : "Click to reveal in folder, double-click to open"
+                          }
+                          onClick={() => {
+                            if (hasSelectedText()) {
+                              return;
+                            }
+                            if (isQuickMode) {
+                              setSelectedResultKey(rowKey);
+                              return;
+                            }
                             void revealResult(result.path);
                           }}
+                          onDoubleClick={() => {
+                            if (hasSelectedText()) {
+                              return;
+                            }
+                            void openResult(result.path);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void openResult(result.path);
+                            } else if (event.key === " ") {
+                              event.preventDefault();
+                              if (isQuickMode) {
+                                setSelectedResultKey(rowKey);
+                                return;
+                              }
+                              void revealResult(result.path);
+                            }
+                          }}
                         >
-                          Folder
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+                          {showPreviews ? (
+                            <div
+                              className={`result-preview ${previewKind} ${isDirectory ? "folder" : ""}`}
+                              aria-hidden="true"
+                            >
+                              <span className="preview-fallback">{shortType}</span>
+                              {hasRenderablePreview && previewKind === "image" ? (
+                                <img
+                                  key={`${rowKey}:${activePreviewIndex}:image`}
+                                  className={`preview-media ${previewReady ? "ready" : ""}`}
+                                  src={previewSrc}
+                                  alt=""
+                                  loading="lazy"
+                                  onLoad={() => {
+                                    handlePreviewReady(previewRenderKey);
+                                  }}
+                                  onError={() => {
+                                    handlePreviewError(rowKey, previewSources.length);
+                                  }}
+                                />
+                              ) : null}
+                              {hasRenderablePreview && previewKind === "video" ? (
+                                <video
+                                  key={`${rowKey}:${activePreviewIndex}:video`}
+                                  className={`preview-media ${previewReady ? "ready" : ""}`}
+                                  src={previewSrc}
+                                  muted
+                                  playsInline
+                                  preload="metadata"
+                                  onLoadedData={() => {
+                                    handlePreviewReady(previewRenderKey);
+                                  }}
+                                  onError={() => {
+                                    handlePreviewError(rowKey, previewSources.length);
+                                  }}
+                                />
+                              ) : null}
+                              {hasRenderablePreview && previewKind === "pdf" ? (
+                                <iframe
+                                  key={`${rowKey}:${activePreviewIndex}:pdf`}
+                                  className={`preview-media ${previewReady ? "ready" : ""}`}
+                                  src={`${previewSrc}#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`}
+                                  title=""
+                                  loading="lazy"
+                                  onLoad={() => {
+                                    handlePreviewReady(previewRenderKey);
+                                  }}
+                                  onError={() => {
+                                    handlePreviewError(rowKey, previewSources.length);
+                                  }}
+                                />
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className={`result-icon ${isDirectory ? "folder" : ""}`}>{shortType}</div>
+                          )}
 
-              {canLoadMore ? (
+                          <div className="result-main">
+                            <strong>{highlightMatch(result.name, trimmedQuery)}</strong>
+                            <span>{highlightMatch(result.path, trimmedQuery)}</span>
+                          </div>
+                          <div className="result-meta">
+                            <span className="meta-chip">{extensionLabel}</span>
+                            <span className="meta-chip">{formatBytes(result.size)}</span>
+                            <span className="meta-chip">{formatUnix(result.createdUnix)}</span>
+                          </div>
+                          <div className="result-actions">
+                            <button
+                              type="button"
+                              className="row-action"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void openResult(result.path);
+                              }}
+                            >
+                              Open
+                            </button>
+                            <button
+                              type="button"
+                              className="row-action"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void revealResult(result.path);
+                              }}
+                            >
+                              Folder
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                {isQuickMode && canLoadMore ? (
+                  <div className="load-more-row quick-load-more-row">
+                    <button type="button" className="load-more-button" onClick={loadMoreResults}>
+                      {`Load more (+${defaultSearchLimit.toLocaleString()})`}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+
+              {isQuickMode ? (
+                <aside className="quick-preview-panel" aria-label="Selected file preview">
+                  {selectedResult ? (
+                    <div className="quick-preview-surface">
+                      <div
+                        className={`quick-preview-stage ${selectedPreviewKind} ${
+                          selectedResultIsDirectory ? "folder" : ""
+                        }`}
+                      >
+                        <span className="preview-fallback">{selectedResultShortType}</span>
+                        {hasSelectedPreview && selectedPreviewKind === "image" ? (
+                          <img
+                            key={`${selectedResultRowKey}:${selectedPreviewIndex}:image:quick`}
+                            className={`preview-media ${selectedPreviewReady ? "ready" : ""}`}
+                            src={selectedPreviewSrc}
+                            alt=""
+                            loading="lazy"
+                            onLoad={() => {
+                              handleSelectedPreviewReady(selectedPreviewRenderKey);
+                            }}
+                            onError={() => {
+                              handleSelectedPreviewError(selectedPreviewSources.length);
+                            }}
+                          />
+                        ) : null}
+                        {hasSelectedPreview && selectedPreviewKind === "video" ? (
+                          <video
+                            key={`${selectedResultRowKey}:${selectedPreviewIndex}:video:quick`}
+                            className={`preview-media ${selectedPreviewReady ? "ready" : ""}`}
+                            src={selectedPreviewSrc}
+                            controls
+                            muted
+                            playsInline
+                            preload="metadata"
+                            onLoadedData={() => {
+                              handleSelectedPreviewReady(selectedPreviewRenderKey);
+                            }}
+                            onError={() => {
+                              handleSelectedPreviewError(selectedPreviewSources.length);
+                            }}
+                          />
+                        ) : null}
+                        {hasSelectedPreview && selectedPreviewKind === "pdf" ? (
+                          <iframe
+                            key={`${selectedResultRowKey}:${selectedPreviewIndex}:pdf:quick`}
+                            className={`preview-media ${selectedPreviewReady ? "ready" : ""}`}
+                            src={`${selectedPreviewSrc}#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`}
+                            title={selectedResult.name}
+                            loading="lazy"
+                            onLoad={() => {
+                              handleSelectedPreviewReady(selectedPreviewRenderKey);
+                            }}
+                            onError={() => {
+                              handleSelectedPreviewError(selectedPreviewSources.length);
+                            }}
+                          />
+                        ) : null}
+                        {!hasSelectedPreview ? (
+                          <div className="quick-preview-placeholder">
+                            <strong>{showPreviews ? "Preview unavailable" : "Preview disabled"}</strong>
+                            <span>
+                              {showPreviews
+                                ? "This file type cannot be rendered here yet, but you can still inspect the metadata and open it."
+                                : "Turn previews back on from the toolbar to load images, video, and PDF previews."}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="quick-preview-body">
+                        <div className="quick-preview-header">
+                          <div className="quick-preview-copy">
+                            <strong>{selectedResult.name}</strong>
+                            <span>{selectedResult.path}</span>
+                          </div>
+                          <div className="quick-preview-actions">
+                            <button
+                              type="button"
+                              className="row-action"
+                              onClick={() => {
+                                void openResult(selectedResult.path);
+                              }}
+                            >
+                              Open file
+                            </button>
+                            <button
+                              type="button"
+                              className="row-action"
+                              onClick={() => {
+                                void revealResult(selectedResult.path);
+                              }}
+                            >
+                              Reveal folder
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="quick-preview-meta">
+                          <div className="quick-preview-meta-card">
+                            <span>Type</span>
+                            <strong>{selectedResultExtensionLabel}</strong>
+                          </div>
+                          <div className="quick-preview-meta-card">
+                            <span>Size</span>
+                            <strong>{formatBytes(selectedResult.size)}</strong>
+                          </div>
+                          <div className="quick-preview-meta-card">
+                            <span>Created</span>
+                            <strong>{formatUnix(selectedResult.createdUnix)}</strong>
+                          </div>
+                          <div className="quick-preview-meta-card">
+                            <span>Modified</span>
+                            <strong>{formatUnix(selectedResult.modifiedUnix)}</strong>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="quick-preview-empty">
+                      <strong>{quickPreviewEmptyTitle}</strong>
+                      {quickPreviewEmptyDetail ? <span>{quickPreviewEmptyDetail}</span> : null}
+                    </div>
+                  )}
+                </aside>
+              ) : null}
+              </div>
+
+              {!isQuickMode && canLoadMore ? (
                 <div className="load-more-row">
                   <button type="button" className="load-more-button" onClick={loadMoreResults}>
                     {`Load more (+${defaultSearchLimit.toLocaleString()})`}
@@ -2519,7 +3796,6 @@ function App() {
 
             {visibleStatusError ? <p className="error-row">{visibleStatusError}</p> : null}
             {driveError ? <p className="error-row">{driveError}</p> : null}
-            {isFallbackModeActive ? <p className="warning-row">{fallbackModeMessage}</p> : null}
 
             <section className="duplicate-controls">
               <label className="duplicate-size-input">
@@ -2748,6 +4024,7 @@ function App() {
                                 if (!hasPath) {
                                   return;
                                 }
+                                setDuplicateDeleteToRecycleBin(false);
                                 setDuplicateDeleteCandidate({
                                   groupId: group.groupId,
                                   path: cleanedPath.trim(),
@@ -2802,6 +4079,17 @@ function App() {
                   <p className="modal-meta">
                     {formatBytes(duplicateDeleteCandidate.size)}
                   </p>
+                  <label className="modal-checkbox-option">
+                    <input
+                      type="checkbox"
+                      checked={duplicateDeleteToRecycleBin}
+                      disabled={duplicateDeleteBusy}
+                      onChange={(event) => {
+                        setDuplicateDeleteToRecycleBin(event.currentTarget.checked);
+                      }}
+                    />
+                    <span>Move to Recycle Bin</span>
+                  </label>
                   <div className="modal-actions">
                     <button
                       type="button"
@@ -2821,7 +4109,13 @@ function App() {
                         void confirmDuplicateDelete();
                       }}
                     >
-                      {duplicateDeleteBusy ? "Deleting..." : "Delete"}
+                      {duplicateDeleteBusy
+                        ? duplicateDeleteToRecycleBin
+                          ? "Moving..."
+                          : "Deleting..."
+                        : duplicateDeleteToRecycleBin
+                          ? "Recycle"
+                          : "Delete"}
                     </button>
                   </div>
                 </div>
@@ -2831,13 +4125,13 @@ function App() {
         ) : null}
 
         {activeTab === "advanced" ? (
-          <section className="tab-panel scrollable-tab-panel" aria-label="Advanced settings">
+          <section className="tab-panel scrollable-tab-panel" aria-label="App settings">
             <div className="about-panel advanced-panel">
               <div className="about-header">
                 <div>
-                  <h2>Advanced settings</h2>
+                  <h2>Settings</h2>
                   <p className="about-tagline">
-                    Choose a full app look and tune how many results load at once.
+                    Manage desktop behavior and default result count for OmniSearch.
                   </p>
                 </div>
               </div>
@@ -2846,17 +4140,221 @@ function App() {
                 <div className="advanced-settings-section">
                   <div className="advanced-section-header">
                     <div>
-                      <h3>Theme gallery</h3>
+                      <h3>Desktop behavior</h3>
                       <p className="advanced-note">
-                        Pick a complete app style. Every preset adapts to both dark and light
-                        mode.
+                        Control the tray behavior and the global shortcut that opens the quick
+                        window as a normal desktop window.
                       </p>
                     </div>
                     <span className="theme-mode-status">
-                      {themeMode === "dark" ? "Dark mode active" : "Light mode active"}
+                      {desktopSettings.shortcutEnabled
+                        ? `Shortcut: ${formattedDesktopShortcut}`
+                        : "Shortcut disabled"}
                     </span>
                   </div>
 
+                  <div className="desktop-settings-grid">
+                    <button
+                      type="button"
+                      className={`settings-switch-card settings-switch-card-button ${
+                        desktopSettingsDraft.backgroundModeEnabled ? "is-active" : ""
+                      }`}
+                      role="switch"
+                      aria-checked={desktopSettingsDraft.backgroundModeEnabled}
+                      disabled={desktopSettingsSaving || desktopSettingsLoading}
+                      onClick={() => {
+                        setDesktopSettingsDraft((previous) => ({
+                          ...previous,
+                          backgroundModeEnabled: !previous.backgroundModeEnabled,
+                        }));
+                        setDesktopSettingsError(null);
+                        setDesktopSettingsMessage(null);
+                      }}
+                    >
+                      <div className="settings-switch-copy">
+                        <strong>Keep app running in the background</strong>
+                        <span>
+                          When enabled, clicking the window X button hides OmniSearch to the tray
+                          instead of quitting.
+                        </span>
+                      </div>
+                      <span
+                        className={`scan-switch settings-switch-toggle settings-switch-toggle-button ${
+                          desktopSettingsDraft.backgroundModeEnabled ? "is-on" : ""
+                        }`}
+                        aria-hidden="true"
+                      >
+                        <span className="scan-switch-slider" aria-hidden="true" />
+                        <span>{desktopSettingsDraft.backgroundModeEnabled ? "On" : "Off"}</span>
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`settings-switch-card settings-switch-card-button ${
+                        desktopSettingsDraft.shortcutEnabled ? "is-active" : ""
+                      }`}
+                      role="switch"
+                      aria-checked={desktopSettingsDraft.shortcutEnabled}
+                      disabled={desktopSettingsSaving || desktopSettingsLoading}
+                      onClick={() => {
+                        setDesktopSettingsDraft((previous) => ({
+                          ...previous,
+                          shortcutEnabled: !previous.shortcutEnabled,
+                        }));
+                        setDesktopSettingsError(null);
+                        setDesktopSettingsMessage(null);
+                      }}
+                    >
+                      <div className="settings-switch-copy">
+                        <strong>Enable global shortcut</strong>
+                        <span>
+                          Register a system-wide hotkey that opens the quick search window without
+                          using overlay or always-on-top behavior.
+                        </span>
+                      </div>
+                      <span
+                        className={`scan-switch settings-switch-toggle settings-switch-toggle-button ${
+                          desktopSettingsDraft.shortcutEnabled ? "is-on" : ""
+                        }`}
+                        aria-hidden="true"
+                      >
+                        <span className="scan-switch-slider" aria-hidden="true" />
+                        <span>{desktopSettingsDraft.shortcutEnabled ? "On" : "Off"}</span>
+                      </span>
+                    </button>
+
+                    <label className="desktop-shortcut-field" htmlFor="desktop-shortcut-input">
+                      <span>Shortcut</span>
+                      <input
+                        id="desktop-shortcut-input"
+                        type="text"
+                        value={desktopSettingsDraft.shortcut}
+                        disabled={desktopSettingsSaving || desktopSettingsLoading}
+                        placeholder={DEFAULT_DESKTOP_SETTINGS.shortcut}
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        onChange={(event) => {
+                          const { value } = event.currentTarget;
+                          setDesktopSettingsDraft((previous) => ({
+                            ...previous,
+                            shortcut: value,
+                          }));
+                          setDesktopSettingsError(null);
+                          setDesktopSettingsMessage(null);
+                        }}
+                      />
+                      <small className="desktop-shortcut-hint">
+                        Type a shortcut like <code>Alt+Shift+S</code> or <code>Ctrl+Alt+S</code>.
+                        The saved shortcut updates immediately after you save.
+                      </small>
+                    </label>
+
+                    <div className="advanced-settings-actions">
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={
+                          desktopSettingsSaving || desktopSettingsLoading || !desktopSettingsDirty
+                        }
+                        onClick={() => {
+                          void saveDesktopBehaviorSettings();
+                        }}
+                      >
+                        {desktopSettingsSaving ? "Saving..." : "Save desktop settings"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={
+                          desktopSettingsSaving || desktopSettingsLoading || !desktopSettingsDirty
+                        }
+                        onClick={() => {
+                          setDesktopSettingsDraft(desktopSettings);
+                          setDesktopSettingsError(null);
+                          setDesktopSettingsMessage(null);
+                        }}
+                      >
+                        Reset changes
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="advanced-note">
+                    Tray menu includes Open Quick Window, Open Main App, Hide, and Quit. Shortcut
+                    changes apply immediately after saving.
+                  </p>
+                  {desktopSettingsLoading ? (
+                    <p className="advanced-note">Loading desktop settings...</p>
+                  ) : null}
+                  {desktopSettingsError ? (
+                    <p className="advanced-error">{desktopSettingsError}</p>
+                  ) : null}
+                  {desktopSettingsMessage ? (
+                    <p className="advanced-success">{desktopSettingsMessage}</p>
+                  ) : null}
+                </div>
+
+                <div className="advanced-settings-section">
+                  <label htmlFor="search-limit-input">
+                    Results per search (range {SEARCH_LIMIT_MIN} - {SEARCH_LIMIT_MAX})
+                  </label>
+                  <NumberInputField
+                    id="search-limit-input"
+                    min={SEARCH_LIMIT_MIN}
+                    max={SEARCH_LIMIT_MAX}
+                    step={50}
+                    value={searchLimitInput}
+                    ariaLabel="Results per search"
+                    onChange={(value) => {
+                      setSearchLimitInput(value);
+                      if (searchLimitError) {
+                        setSearchLimitError(null);
+                      }
+                      if (searchLimitMessage) {
+                        setSearchLimitMessage(null);
+                      }
+                    }}
+                  />
+                  <div className="advanced-settings-actions">
+                    <button type="button" className="ghost-button" onClick={applySearchLimitPreference}>
+                      Update
+                    </button>
+                    <button type="button" className="ghost-button" onClick={resetSearchLimitPreference}>
+                      Reset default ({SEARCH_LIMIT})
+                    </button>
+                  </div>
+                  <p className="advanced-note">
+                    {`Current default: ${defaultSearchLimit.toLocaleString()} | Current active limit: ${searchLimit.toLocaleString()}`}
+                  </p>
+                  <p className="advanced-note">Load more uses this same amount each click.</p>
+                  {searchLimitError ? <p className="advanced-error">{searchLimitError}</p> : null}
+                  {searchLimitMessage ? <p className="advanced-success">{searchLimitMessage}</p> : null}
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === "themes" ? (
+          <section className="tab-panel scrollable-tab-panel" aria-label="Theme gallery">
+            <div className="about-panel advanced-panel">
+              <div className="about-header">
+                <div>
+                  <h2>Themes</h2>
+                  <p className="about-tagline">
+                    Pick a complete app style for OmniSearch. Every preset adapts to both dark and
+                    light mode.
+                  </p>
+                </div>
+                <span className="theme-mode-status">
+                  {themeMode === "dark" ? "Dark mode active" : "Light mode active"}
+                </span>
+              </div>
+
+              <div className="advanced-settings">
+                <div className="advanced-settings-section">
                   <div className="theme-grid" aria-label="Theme presets">
                     {THEME_PRESET_IDS.map((presetId) => {
                       const preset = themePresetById(presetId);
@@ -2924,51 +4422,14 @@ function App() {
                     {`Current preset: ${activeThemePreset.label}. Use the header toggle anytime to switch between its dark and light versions.`}
                   </p>
                 </div>
-
-                <div className="advanced-settings-section">
-                  <label htmlFor="search-limit-input">
-                    Results per search (range {SEARCH_LIMIT_MIN} - {SEARCH_LIMIT_MAX})
-                  </label>
-                  <NumberInputField
-                    id="search-limit-input"
-                    min={SEARCH_LIMIT_MIN}
-                    max={SEARCH_LIMIT_MAX}
-                    step={50}
-                    value={searchLimitInput}
-                    ariaLabel="Results per search"
-                    onChange={(value) => {
-                      setSearchLimitInput(value);
-                      if (settingsError) {
-                        setSettingsError(null);
-                      }
-                      if (settingsMessage) {
-                        setSettingsMessage(null);
-                      }
-                    }}
-                  />
-                  <div className="advanced-settings-actions">
-                    <button type="button" className="ghost-button" onClick={applySearchLimitPreference}>
-                      Update
-                    </button>
-                    <button type="button" className="ghost-button" onClick={resetSearchLimitPreference}>
-                      Reset default ({SEARCH_LIMIT})
-                    </button>
-                  </div>
-                  <p className="advanced-note">
-                    {`Current default: ${defaultSearchLimit.toLocaleString()} | Current active limit: ${searchLimit.toLocaleString()}`}
-                  </p>
-                  <p className="advanced-note">Load more uses this same amount each click.</p>
-                  {settingsError ? <p className="advanced-error">{settingsError}</p> : null}
-                  {settingsMessage ? <p className="advanced-success">{settingsMessage}</p> : null}
-                </div>
               </div>
             </div>
           </section>
         ) : null}
 
         {activeTab === "about" ? (
-          <section className="tab-panel" aria-label="About OmniSearch and developer">
-            <div className="about-panel">
+          <section className="tab-panel scrollable-tab-panel" aria-label="About OmniSearch and developer">
+            <div className="about-panel about-panel-flat">
               <div className="about-header">
                 <div>
                   <h2>About OmniSearch</h2>
@@ -3002,8 +4463,303 @@ function App() {
                   </button>
                 ))}
               </div>
+
+              <div className="about-sections">
+                <section className="about-support-card" aria-label="Support the developer">
+                  <div className="about-support-copy">
+                    <span className="about-support-label">Donate</span>
+                    <strong>Buy me a coffee</strong>
+                    <p>
+                      If OmniSearch helps your workflow, you can support future updates and desktop
+                      tools here.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="about-support-button"
+                    onClick={() => {
+                      void openExternalLink(DONATE_URL);
+                    }}
+                  >
+                    <BuyMeCoffeeIcon />
+                    <span>Buy me a coffee</span>
+                  </button>
+                </section>
+
+                <section className="about-apps-section" aria-label="More apps by Eyuel">
+                  <div className="about-section-heading">
+                    <h3>More Apps by Eyuel Engida</h3>
+                    <p>Other desktop apps.</p>
+                  </div>
+                  <div className="developer-app-grid">
+                    {MORE_APPS.map((item) => (
+                      <button
+                        key={item.url}
+                        type="button"
+                        className={`developer-app-card is-${item.accent}`}
+                        onClick={() => {
+                          void openExternalLink(item.url);
+                        }}
+                      >
+                        <div className="developer-app-card-top">
+                          <span className={`developer-app-icon-shell is-${item.accent}`} aria-hidden="true">
+                            <DeveloperAppIcon icon={item.icon} />
+                          </span>
+                          <div className="developer-app-copy">
+                            <strong>{item.name}</strong>
+                            <span>{item.blurb}</span>
+                          </div>
+                        </div>
+                        <div className="developer-app-card-footer">
+                          <span className="developer-app-link">
+                            <MicrosoftStoreIcon />
+                            <span>Store</span>
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </div>
             </div>
           </section>
+        ) : null}
+
+        {activeTab === "search" && searchResultContextMenu && activeSearchResultMenu ? (
+          <div
+            ref={searchResultContextMenuRef}
+            className="result-context-menu"
+            role="menu"
+            style={searchResultContextMenuStyle}
+            onClick={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            <button
+              type="button"
+              className="result-context-menu-item"
+              role="menuitem"
+              onClick={() => {
+                closeSearchResultContextMenu();
+                void openResult(activeSearchResultMenu.path);
+              }}
+            >
+              Open file
+            </button>
+            <button
+              type="button"
+              className="result-context-menu-item"
+              role="menuitem"
+              onClick={() => {
+                closeSearchResultContextMenu();
+                void openResultPath(activeSearchResultMenu.path);
+              }}
+            >
+              Open path
+            </button>
+            <button
+              type="button"
+              className="result-context-menu-item"
+              role="menuitem"
+              onClick={() => {
+                openSearchResultRename(activeSearchResultMenu, searchResultContextMenu.rowKey);
+              }}
+            >
+              Rename
+            </button>
+
+            <div className="result-context-menu-divider" />
+
+            <button
+              type="button"
+              className="result-context-menu-item"
+              role="menuitem"
+              onClick={() => {
+                closeSearchResultContextMenu();
+                void handleSearchResultCopy(activeSearchResultMenu.path, "path");
+              }}
+            >
+              Copy path
+            </button>
+            <button
+              type="button"
+              className="result-context-menu-item"
+              role="menuitem"
+              onClick={() => {
+                closeSearchResultContextMenu();
+                void handleSearchResultCopy(
+                  resultFilenameWithoutExtension(activeSearchResultMenu),
+                  "filename",
+                );
+              }}
+            >
+              Copy filename
+            </button>
+            <button
+              type="button"
+              className="result-context-menu-item"
+              role="menuitem"
+              onClick={() => {
+                closeSearchResultContextMenu();
+                void handleSearchResultCopy(resultDisplayName(activeSearchResultMenu), "full filename");
+              }}
+            >
+              Copy filename + extension
+            </button>
+
+            <div className="result-context-menu-divider" />
+
+            <button
+              type="button"
+              className="result-context-menu-item danger"
+              role="menuitem"
+              onClick={() => {
+                openSearchResultDelete(activeSearchResultMenu, searchResultContextMenu.rowKey);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        ) : null}
+
+        {searchResultRenameDraft ? (
+          <div
+            className="modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => {
+              if (!searchResultRenameBusy) {
+                setSearchResultRenameDraft(null);
+              }
+            }}
+          >
+            <div
+              className="modal-card"
+              onClick={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              <h3>Rename file</h3>
+              <p>{searchResultRenameDraft.currentName}</p>
+              <p className="modal-path">{searchResultRenameDraft.path}</p>
+
+              <label className="modal-input-group">
+                <span>New name</span>
+                <input
+                  ref={searchResultRenameInputRef}
+                  type="text"
+                  value={searchResultRenameDraft.nextName}
+                  disabled={searchResultRenameBusy}
+                  onChange={(event) => {
+                    const { value } = event.currentTarget;
+                    setSearchResultRenameDraft((previous) =>
+                      previous
+                        ? {
+                            ...previous,
+                            nextName: value,
+                          }
+                        : previous,
+                    );
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void confirmSearchResultRename();
+                    } else if (event.key === "Escape" && !searchResultRenameBusy) {
+                      event.preventDefault();
+                      setSearchResultRenameDraft(null);
+                    }
+                  }}
+                />
+              </label>
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={searchResultRenameBusy}
+                  onClick={() => {
+                    setSearchResultRenameDraft(null);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={searchResultRenameBusy}
+                  onClick={() => {
+                    void confirmSearchResultRename();
+                  }}
+                >
+                  {searchResultRenameBusy ? "Renaming..." : "Rename"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {searchResultDeleteCandidate ? (
+          <div
+            className="modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => {
+              if (!searchResultDeleteBusy) {
+                setSearchResultDeleteCandidate(null);
+              }
+            }}
+          >
+            <div
+              className="modal-card"
+              onClick={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              <h3>Delete file?</h3>
+              <p>{searchResultDeleteCandidate.name}</p>
+              <p className="modal-path">{searchResultDeleteCandidate.path}</p>
+              <label className="modal-checkbox-option">
+                <input
+                  type="checkbox"
+                  checked={searchResultDeleteToRecycleBin}
+                  disabled={searchResultDeleteBusy}
+                  onChange={(event) => {
+                    setSearchResultDeleteToRecycleBin(event.currentTarget.checked);
+                  }}
+                />
+                <span>Move to Recycle Bin</span>
+              </label>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={searchResultDeleteBusy}
+                  onClick={() => {
+                    setSearchResultDeleteCandidate(null);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="row-action danger-row-action"
+                  disabled={searchResultDeleteBusy}
+                  onClick={() => {
+                    void confirmSearchResultDelete();
+                  }}
+                >
+                  {searchResultDeleteBusy
+                    ? searchResultDeleteToRecycleBin
+                      ? "Moving..."
+                      : "Deleting..."
+                    : searchResultDeleteToRecycleBin
+                      ? "Recycle"
+                      : "Delete"}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
       </main>
     </div>

@@ -1,8 +1,32 @@
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use base64::Engine;
 use tauri_plugin_opener::OpenerExt;
+
+#[cfg(windows)]
+use std::{os::windows::ffi::OsStrExt, path::Path};
+#[cfg(windows)]
+use windows::{
+    core::{implement, PCWSTR},
+    Win32::{
+        Foundation::{
+            DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK,
+        },
+        System::{
+            Com::IDataObject,
+            Ole::{IDropSource, IDropSource_Impl, DROPEFFECT, DROPEFFECT_COPY},
+            SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS},
+        },
+        UI::Shell::{
+            Common::ITEMIDLIST, ILClone, ILCreateFromPathW, ILFindLastID, ILFree, ILRemoveLastID,
+            SHCreateDataObject, SHDoDragDrop,
+        },
+    },
+};
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod desktop;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +91,71 @@ struct DriveInfo {
     can_open_volume: bool,
 }
 
+#[cfg(windows)]
+struct OwnedItemIdList(*mut ITEMIDLIST);
+
+#[cfg(windows)]
+impl OwnedItemIdList {
+    fn from_path(path: &Path) -> Result<Self, String> {
+        let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let pidl = unsafe { ILCreateFromPathW(PCWSTR(wide_path.as_ptr())) };
+        if pidl.is_null() {
+            Err(format!(
+                "Failed to create a shell item for '{}'.",
+                path.display()
+            ))
+        } else {
+            Ok(Self(pidl))
+        }
+    }
+
+    fn as_ptr(&self) -> *const ITEMIDLIST {
+        self.0 as *const ITEMIDLIST
+    }
+
+    fn as_mut_ptr(&self) -> *mut ITEMIDLIST {
+        self.0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedItemIdList {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.0.is_null() {
+                ILFree(Some(self.0 as *const ITEMIDLIST));
+                self.0 = std::ptr::null_mut();
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+#[implement(IDropSource)]
+struct NativeFileDropSource;
+
+#[cfg(windows)]
+#[allow(non_snake_case)]
+impl IDropSource_Impl for NativeFileDropSource_Impl {
+    fn QueryContinueDrag(
+        &self,
+        fescapepressed: windows_core::BOOL,
+        grfkeystate: MODIFIERKEYS_FLAGS,
+    ) -> windows_core::HRESULT {
+        if fescapepressed.as_bool() {
+            DRAGDROP_S_CANCEL
+        } else if grfkeystate & MK_LBUTTON == MODIFIERKEYS_FLAGS(0) {
+            DRAGDROP_S_DROP
+        } else {
+            S_OK
+        }
+    }
+
+    fn GiveFeedback(&self, _dweffect: DROPEFFECT) -> windows_core::HRESULT {
+        DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
+
 #[cfg(target_os = "windows")]
 unsafe extern "C" {
     fn omni_start_indexing(
@@ -95,7 +184,7 @@ unsafe extern "C" {
     fn omni_cancel_duplicate_scan() -> bool;
     fn omni_duplicate_scan_status_json() -> *mut c_char;
     fn omni_list_drives_json() -> *mut c_char;
-    fn omni_delete_path(path_utf8: *const c_char) -> bool;
+    fn omni_delete_path(path_utf8: *const c_char, recycle_bin: bool) -> bool;
     fn omni_free_string(ptr: *mut c_char);
 }
 
@@ -265,9 +354,8 @@ async fn find_duplicate_groups(
             let raw_json =
                 unsafe { omni_find_duplicates_json(min_size, max_groups, max_files_per_group) };
             if raw_json.is_null() {
-                return Err(
-                    read_last_error().unwrap_or_else(|| "Failed to find duplicate files.".to_string())
-                );
+                return Err(read_last_error()
+                    .unwrap_or_else(|| "Failed to find duplicate files.".to_string()));
             }
 
             // SAFETY: `raw_json` points to a C string allocated by C++.
@@ -297,9 +385,8 @@ fn duplicate_scan_status() -> Result<DuplicateScanStatus, String> {
         // SAFETY: No inputs, returns an allocated C string or null.
         let raw_json = unsafe { omni_duplicate_scan_status_json() };
         if raw_json.is_null() {
-            return Err(
-                read_last_error().unwrap_or_else(|| "Failed to read duplicate scan status.".to_string())
-            );
+            return Err(read_last_error()
+                .unwrap_or_else(|| "Failed to read duplicate scan status.".to_string()));
         }
 
         // SAFETY: `raw_json` points to a C string allocated by C++.
@@ -334,11 +421,16 @@ fn cancel_duplicate_scan() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn delete_path(path: String) -> Result<bool, String> {
+fn delete_path(
+    path: String,
+    recycle_bin: Option<bool>,
+    #[allow(non_snake_case)] recycleBin: Option<bool>,
+) -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
+        let recycle_bin = recycle_bin.or(recycleBin).unwrap_or(false);
         let c_path = CString::new(path).map_err(|_| "Invalid path parameter".to_string())?;
-        let ok = unsafe { omni_delete_path(c_path.as_ptr()) };
+        let ok = unsafe { omni_delete_path(c_path.as_ptr(), recycle_bin) };
         if !ok {
             return Err(read_last_error().unwrap_or_else(|| "Delete failed".to_string()));
         }
@@ -347,8 +439,53 @@ fn delete_path(path: String) -> Result<bool, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = path;
+        let _ = (path, recycle_bin, recycleBin);
         Err("Delete is only supported on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+fn rename_path(path: String, new_name: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::fs;
+        use std::path::PathBuf;
+
+        let current_path = PathBuf::from(path);
+        if !current_path.exists() {
+            return Err("File does not exist on disk.".to_string());
+        }
+
+        let trimmed_name = new_name.trim();
+        if trimmed_name.is_empty() {
+            return Err("Name cannot be empty.".to_string());
+        }
+        if trimmed_name.contains('\\') || trimmed_name.contains('/') {
+            return Err("Name must not include path separators.".to_string());
+        }
+
+        let parent = current_path
+            .parent()
+            .ok_or_else(|| "Failed to resolve the parent directory.".to_string())?;
+        let next_path = parent.join(trimmed_name);
+
+        if next_path == current_path {
+            return Ok(current_path.to_string_lossy().into_owned());
+        }
+        if next_path.exists() {
+            return Err("An item with that name already exists.".to_string());
+        }
+
+        fs::rename(&current_path, &next_path)
+            .map_err(|err| format!("Failed to rename item: {err}"))?;
+
+        Ok(next_path.to_string_lossy().into_owned())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (path, new_name);
+        Err("Rename is only supported on Windows.".to_string())
     }
 }
 
@@ -359,7 +496,9 @@ fn list_drives() -> Result<Vec<DriveInfo>, String> {
         // SAFETY: No parameters, returns allocated C string or null.
         let raw_json = unsafe { omni_list_drives_json() };
         if raw_json.is_null() {
-            return Err(read_last_error().unwrap_or_else(|| "Failed to enumerate drives".to_string()));
+            return Err(
+                read_last_error().unwrap_or_else(|| "Failed to enumerate drives".to_string())
+            );
         }
 
         // SAFETY: `raw_json` points to a C string allocated by C++.
@@ -428,6 +567,92 @@ fn reveal_in_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn start_native_file_drag(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::PathBuf;
+        use std::sync::mpsc;
+
+        let file_path = PathBuf::from(&path);
+        if !file_path.exists() {
+            return Err("File does not exist on disk.".to_string());
+        }
+        if !file_path.is_file() {
+            return Err("Only files can be dragged out of OmniSearch.".to_string());
+        }
+
+        let window_for_drag = window.clone();
+        let path_for_drag = path.clone();
+        let (tx, rx) = mpsc::channel();
+
+        window
+            .run_on_main_thread(move || {
+                let result = start_native_file_drag_impl(&window_for_drag, &path_for_drag);
+                let _ = tx.send(result);
+            })
+            .map_err(|err| format!("Failed to start the native drag request: {err}"))?;
+
+        return rx
+            .recv()
+            .map_err(|_| "Failed to receive the native drag result.".to_string())?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, path);
+        Err("Native file drag is only supported on Windows.".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn start_native_file_drag_impl<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    path: &str,
+) -> Result<(), String> {
+    let file_path = std::path::PathBuf::from(path);
+    let hwnd = window
+        .hwnd()
+        .map_err(|err| format!("Failed to access the native window handle: {err}"))?;
+
+    let folder_pidl = OwnedItemIdList::from_path(&file_path)?;
+    let item_pidl = unsafe {
+        let item_ptr = ILFindLastID(folder_pidl.as_ptr());
+        if item_ptr.is_null() {
+            return Err("Failed to resolve the dragged file in the Windows shell.".to_string());
+        }
+
+        let cloned_item = ILClone(item_ptr);
+        if cloned_item.is_null() {
+            return Err("Failed to clone the dragged file shell item.".to_string());
+        }
+
+        OwnedItemIdList(cloned_item)
+    };
+
+    if !unsafe { ILRemoveLastID(Some(folder_pidl.as_mut_ptr())) }.as_bool() {
+        return Err("Failed to resolve the parent folder for drag and drop.".to_string());
+    }
+
+    let children = [item_pidl.as_ptr()];
+    let data_object: IDataObject = unsafe {
+        SHCreateDataObject(
+            Some(folder_pidl.as_ptr()),
+            Some(&children),
+            None::<&IDataObject>,
+        )
+        .map_err(|err| format!("Failed to prepare the dragged file: {err}"))?
+    };
+    let drop_source: IDropSource = NativeFileDropSource.into();
+
+    unsafe {
+        SHDoDragDrop(Some(hwnd), &data_object, &drop_source, DROPEFFECT_COPY)
+            .map_err(|err| format!("Failed to start the native file drag: {err}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -483,7 +708,8 @@ fn load_preview_data_url(path: String) -> Result<String, String> {
             _ => return Err("Preview not supported for this file type.".to_string()),
         };
 
-        let metadata = fs::metadata(&file_path).map_err(|err| format!("Preview metadata read failed: {err}"))?;
+        let metadata = fs::metadata(&file_path)
+            .map_err(|err| format!("Preview metadata read failed: {err}"))?;
         let max_preview_bytes = match mime {
             "application/pdf" => 8 * 1024 * 1024_u64,
             "video/mp4" | "video/webm" | "video/quicktime" | "video/x-m4v" | "video/x-msvideo"
@@ -492,7 +718,10 @@ fn load_preview_data_url(path: String) -> Result<String, String> {
         };
 
         if metadata.len() > max_preview_bytes {
-            return Err(format!("Preview skipped: file too large ({} bytes).", metadata.len()));
+            return Err(format!(
+                "Preview skipped: file too large ({} bytes).",
+                metadata.len()
+            ));
         }
 
         let bytes = fs::read(&file_path).map_err(|err| format!("Preview read failed: {err}"))?;
@@ -509,7 +738,18 @@ fn load_preview_data_url(path: String) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        builder = builder.manage(desktop::desktop_state_for_builder());
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            desktop::focus_existing_instance(app);
+        }));
+        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             start_indexing,
@@ -519,12 +759,33 @@ pub fn run() {
             duplicate_scan_status,
             cancel_duplicate_scan,
             delete_path,
+            rename_path,
             list_drives,
             open_file,
             reveal_in_folder,
+            start_native_file_drag,
             open_external_url,
-            load_preview_data_url
+            load_preview_data_url,
+            desktop::get_desktop_settings,
+            desktop::open_full_window_command,
+            desktop::open_quick_window_command,
+            desktop::sync_window_theme_command,
+            desktop::update_desktop_settings
         ])
+        .setup(|app| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                desktop::setup(app)?;
+            }
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                desktop::handle_window_event(window, event);
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

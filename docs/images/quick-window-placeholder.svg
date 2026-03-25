@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">OmniSearch Quick Window Screenshot Placeholder</title>
+  <desc id="desc">Placeholder artwork for the OmniSearch quick window screenshot in the README.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0c1623" />
+      <stop offset="100%" stop-color="#1c2d44" />
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#101b2b" />
+      <stop offset="100%" stop-color="#162435" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#69d7ff" />
+      <stop offset="100%" stop-color="#5dd4a2" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="980" fill="url(#bg)" />
+  <circle cx="210" cy="140" r="180" fill="#1e4f83" opacity="0.2" />
+  <circle cx="1380" cy="120" r="170" fill="#37a886" opacity="0.14" />
+
+  <rect x="120" y="82" width="1360" height="816" rx="28" fill="url(#panel)" stroke="#3f5877" stroke-width="2" />
+  <rect x="120" y="82" width="1360" height="64" rx="28" fill="#0d1622" />
+  <circle cx="170" cy="114" r="7" fill="#ff6f7a" />
+  <circle cx="194" cy="114" r="7" fill="#f6c35c" />
+  <circle cx="218" cy="114" r="7" fill="#67d59b" />
+
+  <rect x="170" y="182" width="760" height="66" rx="18" fill="#1d2b3b" stroke="#47607e" />
+  <circle cx="212" cy="215" r="13" fill="none" stroke="#68b9ff" stroke-width="4" />
+  <line x1="221" y1="224" x2="235" y2="238" stroke="#68b9ff" stroke-width="4" stroke-linecap="round" />
+
+  <rect x="962" y="182" width="166" height="50" rx="25" fill="#253446" stroke="#47607e" />
+  <rect x="1144" y="182" width="136" height="50" rx="25" fill="#253446" stroke="#47607e" />
+  <rect x="1296" y="182" width="134" height="50" rx="25" fill="#253446" stroke="#47607e" />
+
+  <rect x="170" y="286" width="530" height="84" rx="18" fill="#192738" stroke="#314960" />
+  <rect x="170" y="392" width="530" height="54" rx="16" fill="#192738" stroke="#314960" />
+  <rect x="170" y="468" width="250" height="54" rx="16" fill="#192738" stroke="#314960" />
+  <rect x="450" y="468" width="250" height="54" rx="16" fill="#192738" stroke="#314960" />
+  <rect x="170" y="544" width="250" height="54" rx="16" fill="#192738" stroke="#314960" />
+  <rect x="450" y="544" width="250" height="54" rx="16" fill="#192738" stroke="#314960" />
+
+  <rect x="742" y="286" width="650" height="520" rx="22" fill="#121f2f" stroke="#3a536f" />
+  <rect x="782" y="326" width="570" height="286" rx="20" fill="#0d1826" stroke="#29435d" />
+  <rect x="782" y="640" width="270" height="122" rx="18" fill="#172435" stroke="#314960" />
+  <rect x="1082" y="640" width="270" height="122" rx="18" fill="#172435" stroke="#314960" />
+
+  <rect x="170" y="654" width="522" height="22" rx="11" fill="#32475f" />
+  <rect x="170" y="694" width="418" height="18" rx="9" fill="#27394e" />
+  <rect x="170" y="754" width="104" height="42" rx="21" fill="#143f4c" stroke="#4bdab0" />
+  <rect x="290" y="754" width="104" height="42" rx="21" fill="#223245" stroke="#405a79" />
+  <rect x="410" y="754" width="104" height="42" rx="21" fill="#223245" stroke="#405a79" />
+  <rect x="530" y="754" width="104" height="42" rx="21" fill="#223245" stroke="#405a79" />
+
+  <rect x="782" y="690" width="190" height="16" rx="8" fill="#3a526d" />
+  <rect x="782" y="720" width="250" height="16" rx="8" fill="#27394d" />
+  <rect x="1082" y="690" width="180" height="16" rx="8" fill="#3a526d" />
+  <rect x="1082" y="720" width="220" height="16" rx="8" fill="#27394d" />
+
+  <rect x="170" y="118" width="228" height="12" rx="6" fill="url(#accent)" opacity="0.9" />
+
+  <text x="800" y="842" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700" fill="#eff7ff">
+    Quick Window Screenshot Placeholder
+  </text>
+  <text x="800" y="882" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="22" fill="#a9bfd7">
+    Replace docs/images/quick-window-placeholder.svg with your captured Quick Window image when ready.
+  </text>
+</svg>

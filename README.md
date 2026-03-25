@@ -15,24 +15,26 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 <p align="center"><sub>──────────── · ────────────</sub></p>
 <p align="center">&nbsp;</p>
 
-<p align="center"><strong>Duplicate Finder</strong></p>
+<p align="center"><strong>Quick Window</strong></p>
 <p align="center">
-  <img src="docs/images/A2.png" width="84%" alt="OmniSearch Duplicate Finder Screenshot">
+  <img src="docs/images/quick-window.png" width="88%" alt="OmniSearch Quick Window">
 </p>
-<p align="center"><em>Duplicate Finder groups identical files, shows reclaimable space, and supports progress + cancel.</em></p>
+<p align="center"><em>Quick-search view with instant filters, keyboard-first flow, and a dedicated preview panel.</em></p>
 <p align="center"><sub>──────────── · ────────────</sub></p>
 <p align="center">&nbsp;</p>
 
-<p align="center"><strong>Drive Scope & Advanced Settings</strong></p>
+<p align="center"><strong>Advanced Features</strong></p>
 <p align="center">
-  <img src="docs/images/A3.png" width="84%" alt="OmniSearch Drive Scope and Advanced Settings Screenshot">
+  <img src="docs/images/A2.png" width="44%" alt="OmniSearch Duplicate Finder Screenshot">
+  <img src="docs/images/6.png" width="44%" alt="OmniSearch Drive Scope and Advanced Settings Screenshot">
 </p>
-<p align="center"><em>Optional all-drives indexing, include-folders toggle, and theme selection.</em></p>
+<p align="center">
+  <em>Duplicate Finder identifies identical files and shows reclaimable space, alongside advanced drive scope and indexing controls.</em>
+</p>
 
 <p align="center">
   <img src="docs/images/omnisearch-architecture.svg" width="92%" alt="OmniSearch Architecture">
 </p>
-
 ## Features
 
 - Native Windows indexing engine in C++ using `DeviceIoControl` + USN/MFT enumeration.
@@ -47,7 +49,14 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 - Advanced settings panel for configurable default search limit (persisted locally).
 - Incremental `Load more` results flow that expands by your configured default limit step.
 - Result tools: open file, reveal in folder, previews (image/video/pdf), sort modes, and category tabs.
-- Light/dark theme toggle and separate Search / Duplicates / About tabs.
+- Quick Window mode for compact search, fast hotkey access, and a dedicated selected-result preview surface.
+- Search result context actions: open path, copy path, copy filename, copy full filename, rename, and delete.
+- Optional Recycle Bin delete flow for both duplicate cleanup and standard search results.
+- Native drag-out support so files can be dragged directly from result rows into Explorer or other apps.
+- Theme gallery with multiple presets across dark and light mode, including Slate Glass, Win Slate, Metro, Aurora, Nordic Ink, Ember, Cedar, and Solar Sand.
+- Desktop behavior settings for tray mode, background running, and configurable global shortcut handling.
+- Full workspace / Quick Window switching from the tray menu, hotkey, and in-app controls.
+- Light/dark theme toggle and dedicated Search / Duplicates / Settings / Themes / About tabs.
 - Installer targets via Tauri bundle (MSI and NSIS).
 - Windows manifest requests Administrator privileges (`requireAdministrator`) for raw volume access.
 
@@ -100,7 +109,11 @@ omni-search/
 - `search_files`
 - `find_duplicate_groups`, `duplicate_scan_status`, `cancel_duplicate_scan`
 - `list_drives`
-- `open_file`, `reveal_in_folder`
+- `open_file`, `reveal_in_folder`, `delete_path`, `rename_path`
+- `start_native_file_drag`
+- `open_full_window_command`, `open_quick_window_command`
+- `get_desktop_settings`, `update_desktop_settings`
+- `sync_window_theme_command`
 - `open_external_url`
 - `load_preview_data_url`
 
