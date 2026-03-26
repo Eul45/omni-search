@@ -9,7 +9,7 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 
 <p align="center"><strong>Search Experience</strong></p>
 <p align="center">
-  <img src="docs/images/A1.png" width="88%" alt="OmniSearch Screenshot">
+  <img src="docs/images/Explore.png" width="88%" alt="OmniSearch Screenshot">
 </p>
 <p align="center"><em>Main search tab with filters, categories, previews, and actions.</em></p>
 <p align="center"><sub>──────────── · ────────────</sub></p>
@@ -17,7 +17,7 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 
 <p align="center"><strong>Quick Window</strong></p>
 <p align="center">
-  <img src="docs/images/quick-window.png" width="88%" alt="OmniSearch Quick Window">
+  <img src="docs/images/quick-window1.png" width="88%" alt="OmniSearch Quick Window">
 </p>
 <p align="center"><em>Quick-search view with instant filters, keyboard-first flow, and a dedicated preview panel.</em></p>
 <p align="center"><sub>──────────── · ────────────</sub></p>
@@ -35,6 +35,7 @@ OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global s
 <p align="center">
   <img src="docs/images/omnisearch-architecture.svg" width="92%" alt="OmniSearch Architecture">
 </p>
+
 ## Features
 
 - Native Windows indexing engine in C++ using `DeviceIoControl` + USN/MFT enumeration.
