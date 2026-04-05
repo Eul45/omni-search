@@ -3,6 +3,36 @@
 High-performance Windows desktop file search built with Tauri v2, Rust, and C++.
 OmniSearch indexes NTFS metadata directly through USN/MFT APIs for fast global search with advanced filters and duplicate detection.
 
+<hr>
+
+<h4 align="center">
+  <a href="https://github.com/Eul45/omni-search/releases/latest">Install</a>
+  &middot;
+  <a href="https://github.com/Eul45/omni-search?tab=readme-ov-file#main-commands-tauri">Commands</a>
+  &middot;
+  <a href="https://github.com/Eul45/omni-search?tab=readme-ov-file#how-it-works">Architecture</a>
+</h4>
+
+<div align="center">
+  <a href="https://github.com/Eul45/omni-search/releases/latest">
+    <img alt="Latest release" src="https://img.shields.io/github/v/release/Eul45/omni-search?style=for-the-badge&color=C9CBFF&logoColor=D9E0EE&labelColor=302D41&label=OMNISEARCH&include_prerelease&sort=semver" />
+  </a>
+  <a href="https://github.com/Eul45/omni-search/pulse">
+    <img alt="Last commit" src="https://img.shields.io/github/last-commit/Eul45/omni-search?style=for-the-badge&color=8bd5ca&logoColor=D9E0EE&labelColor=302D41" />
+  </a>
+  <a href="https://github.com/Eul45/omni-search/blob/main/LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/License-MIT-ee999f?style=for-the-badge&logoColor=D9E0EE&labelColor=302D41" />
+  </a>
+  <a href="https://tauri.app">
+    <img alt="Tauri v2" src="https://img.shields.io/badge/Tauri-v2-blue?style=for-the-badge&color=c69ff5&logoColor=D9E0EE&labelColor=302D41" />
+  </a>
+  <a href="https://github.com/Eul45/omni-search/stargazers">
+    <img alt="Stars" src="https://img.shields.io/github/stars/Eul45/omni-search?style=for-the-badge&color=f9e2af&logoColor=D9E0EE&labelColor=302D41" />
+  </a>
+</div>
+
+<p align="center">&nbsp;</p>
+
 <p align="center">
   <img src="src-tauri/icons/icon.png" width="150" alt="OmniSearch Logo">
 </p>
