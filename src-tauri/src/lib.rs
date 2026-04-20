@@ -26,6 +26,8 @@ use windows::{
 };
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod apps;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod desktop;
 
 #[derive(Debug, Serialize)]
@@ -825,6 +827,10 @@ pub fn run() {
             start_native_file_drag,
             open_external_url,
             load_preview_data_url,
+            apps::list_installed_apps,
+            apps::launch_installed_app,
+            apps::reveal_installed_app,
+            apps::load_installed_app_icon_data_url,
             desktop::get_desktop_settings,
             desktop::open_full_window_command,
             desktop::open_quick_window_command,

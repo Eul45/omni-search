@@ -1,6 +1,6 @@
 [package]
 name = "omni-search"
-version = "0.1.12"
+version = "0.1.13"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -27,5 +27,16 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Com", "Win32_System_Ole", "Win32_System_ProcessStatus", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Ole", "Win32_System_ProcessStatus", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
 windows-core = "0.61"
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

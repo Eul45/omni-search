@@ -37,13 +37,11 @@ OmniSearch reads NTFS metadata directly through USN/MFT APIs for quick global se
   <img src="src-tauri/icons/icon.png" width="150" alt="OmniSearch Logo">
 </p>
 
-<p align="center">
-  Search faster across your Windows drives with advanced filters, duplicate cleanup, Quick Window access, and a growing Microsoft Store version.
-</p>
+<p align="center">&nbsp;</p>
 
 <p align="center"><strong>Search Experience</strong></p>
 <p align="center">
-  <img src="docs/images/main_view.png" width="84%" alt="OmniSearch Screenshot">
+  <img src="docs/images/a.gif" width="84%" alt="OmniSearch Screenshot">
 </p>
 <p align="center"><em>Main search tab with filters, categories, previews, and actions.</em></p>
 <p align="center"><sub>──────────── · ────────────</sub></p>
@@ -59,7 +57,7 @@ OmniSearch reads NTFS metadata directly through USN/MFT APIs for quick global se
 
 <p align="center"><strong>Advanced Features</strong></p>
 <p align="center">
-  <img src="docs/images/A2.png" width="44%" alt="OmniSearch Duplicate Finder Screenshot">
+  <img src="docs/images/dub.png" width="44%" alt="OmniSearch Duplicate Finder Screenshot">
   <img src="docs/images/6.png" width="44%" alt="OmniSearch Drive Scope and Advanced Settings Screenshot">
 </p>
 <p align="center">

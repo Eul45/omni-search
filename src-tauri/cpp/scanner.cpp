@@ -448,14 +448,11 @@ bool ContainsCaseInsensitive(const std::wstring& text, const std::wstring& needl
 
   const size_t last_start = text.size() - needle_lower.size();
   for (size_t i = 0; i <= last_start; ++i) {
-    bool matched = true;
-    for (size_t j = 0; j < needle_lower.size(); ++j) {
-      if (static_cast<wchar_t>(std::towlower(text[i + j])) != needle_lower[j]) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) {
+    if (CompareStringOrdinal(text.c_str() + i,
+                             static_cast<int>(needle_lower.size()),
+                             needle_lower.c_str(),
+                             static_cast<int>(needle_lower.size()),
+                             TRUE) == CSTR_EQUAL) {
       return true;
     }
   }
