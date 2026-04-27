@@ -59,6 +59,7 @@ jobs:
           github-artifact-id: ${{ steps.upload-unsigned-artifact.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: "${{ github.workspace }}\\signed-artifacts"
+          skip-decompress: true
 
       - name: Upload signed installer
         uses: actions/upload-artifact@v7
