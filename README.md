@@ -8,6 +8,10 @@ OmniSearch reads NTFS metadata directly through USN/MFT APIs for quick global se
 <h4 align="center">
   <a href="https://github.com/Eul45/omni-search/releases/latest">Install</a>
   &middot;
+  <a href="https://www.eyuel.com.et/omni-search">Homepage</a>
+  &middot;
+  <a href="https://eyuel.com.et/omni-search/#faq">FAQ</a>
+  &middot;
   <a href="https://github.com/Eul45/omni-search?tab=readme-ov-file#main-commands-tauri">Commands</a>
   &middot;
   <a href="https://github.com/Eul45/omni-search?tab=readme-ov-file#how-it-works">Architecture</a>
@@ -255,6 +259,10 @@ Update visible app metadata in `src-tauri/tauri.conf.json`:
 - App still shows old icon:
   - Regenerate icons, run `cargo clean`, rebuild, and restart Explorer (Windows icon cache).
 
+### Sponsors
+| ![signpath](https://signpath.org/assets/favicon-50x50.png) | Free code signing on Windows provided by [SignPath.io](https://about.signpath.io/),certficate by [SignPath Foundation](https://signpath.org/) |
+|------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+
 ## Contributing
 
 1. Fork the repo.
@@ -271,5 +279,3 @@ Update visible app metadata in `src-tauri/tauri.conf.json`:
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Eul45/omni-search&type=date&legend=top-left" />
  </picture>
 </a>
-
-
