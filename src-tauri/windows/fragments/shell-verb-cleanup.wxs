@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="TARGETDIR">
+      <Component Id="OmniSearchShellVerbCleanup" Guid="*">
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\EyuelEngida\OmniSearch"
+          Name="ShellVerbCleanupComponent"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+        <RemoveRegistryKey
+          Id="RemoveFileSendToPhoneShellVerb"
+          Root="HKCU"
+          Key="Software\Classes\*\shell\OmniSearch.SendToPhone"
+          Action="removeOnUninstall" />
+        <RemoveRegistryKey
+          Id="RemoveAllFilesystemObjectsSendToPhoneShellVerb"
+          Root="HKCU"
+          Key="Software\Classes\AllFilesystemObjects\shell\OmniSearch.SendToPhone"
+          Action="removeOnUninstall" />
+        <RemoveRegistryKey
+          Id="RemoveDirectorySendToPhoneShellVerb"
+          Root="HKCU"
+          Key="Software\Classes\Directory\shell\OmniSearch.SendToPhone"
+          Action="removeOnUninstall" />
+        <RemoveRegistryKey
+          Id="RemoveDirectoryBackgroundSendToPhoneShellVerb"
+          Root="HKCU"
+          Key="Software\Classes\Directory\Background\shell\OmniSearch.SendToPhone"
+          Action="removeOnUninstall" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

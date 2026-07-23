@@ -7,10 +7,16 @@ dist-ssr/
 *.tsbuildinfo
 
 # Rust / Tauri build outputs
+target/
+**/target/
+omnisearch-lite/target/
+omnisearch-lite/Output/
 src-tauri/target/
 src-tauri/gen/schemas/
 src-tauri/*.pdb
 *.pdb
+*.msix
+*.appx
 
 # Android companion app outputs and local files
 android/.gradle/

@@ -1,0 +1,29 @@
+# Rust Build Artifacts
+/target/
+**/*.rs.bk
+
+# Generated Binaries & Executables
+*.exe
+*.dll
+*.pdb
+*.msix
+*.appx
+*.msi
+
+# Inno Setup / Installer Outputs
+/Output/
+/installer_output/
+*.setup.exe
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs & Temporary Files
+*.log
+*.tmp
+/scratch/
+.DS_Store
+Thumbs.db

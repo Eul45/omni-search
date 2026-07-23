@@ -67,6 +67,22 @@ OmniSearch reads NTFS metadata directly through USN/MFT APIs for quick global se
 <p align="center">
   <em>Duplicate Finder identifies identical files and shows reclaimable space, alongside advanced drive scope and indexing controls.</em>
 </p>
+<p align="center"><strong>OmniSearch Lite</strong></p>
+
+<p align="center">
+  <img src="docs/images/omnisearch-lite.png" width="88%" alt="OmniSearch Lite Spotlight Launcher">
+</p>
+
+<p align="center">
+  <em>OmniSearch Lite: Lightweight, spotlight launcher with Circle-to-Search, AI Workspace, Mobile Phone Sync, and built-in productivity tools.</em>
+</p>
+<p align="center">
+  <a href="https://apps.microsoft.com/detail/9NMZS1GMTCT2?hl=en-us&gl=US&ocid=pdpshare" target="_blank">
+    <img src="https://get.microsoft.com/images/en-us%20dark.svg" width="180" alt="Get OmniSearch Lite on Microsoft Store" />
+  </a>
+</p>
+<p align="center"><sub>──────────── · ────────────</sub></p>
+<p align="center">&nbsp;</p>
 
 <p align="center">&nbsp;</p>
 
@@ -83,7 +99,7 @@ OmniSearch reads NTFS metadata directly through USN/MFT APIs for quick global se
 </table>
 
 <details>
-<summary><strong>Preview Microsoft Store extras</strong></summary>
+<summary><strong>Preview Microsoft Store extras for omnisearch</strong></summary>
 
 <p>custom background images for the app and a compact search bar mode.</p>
 

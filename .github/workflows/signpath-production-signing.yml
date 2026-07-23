@@ -30,6 +30,13 @@ jobs:
             config_slug: 'msi-installer'
             file_ext: '*.msi'
 
+          - name: x64-lite
+            runner: windows-latest
+            args: ''
+            bundle_type: 'lite'
+            config_slug: 'nsis-installer'
+            file_ext: 'omnisearchlitesetup.exe'
+
     name: Sign ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -53,7 +60,16 @@ jobs:
         run: npm install
 
       - name: Build installer
-        run: npx tauri build ${{ matrix.args }}
+        shell: pwsh
+        run: |
+          if ("${{ matrix.name }}" -eq "x64-lite") {
+            cargo build --manifest-path omnisearch-lite/Cargo.toml --release
+            iscc omnisearch-lite/installer.iss
+            New-Item -ItemType Directory -Force -Path "src-tauri/target/release/bundle/lite"
+            Copy-Item -Path "omnisearch-lite/setup/omnisearchlitesetup.exe" -Destination "src-tauri/target/release/bundle/lite/omnisearchlitesetup.exe"
+          } else {
+            npx tauri build ${{ matrix.args }}
+          }
 
       - name: Locate unsigned installer
         id: locate-installer

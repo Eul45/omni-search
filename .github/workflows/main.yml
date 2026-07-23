@@ -64,6 +64,15 @@ jobs:
         with:
           args: ${{ matrix.args }}
 
+      - name: Build OmniSearch Lite
+        if: matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          cargo build --manifest-path omnisearch-lite/Cargo.toml --release
+          iscc omnisearch-lite/installer.iss
+          mkdir -p src-tauri/target/release/bundle/nsis
+          cp omnisearch-lite/setup/omnisearchlitesetup.exe src-tauri/target/release/bundle/nsis/
+
       - name: Upload MSI Artifact
         if: matrix.arch == 'x86_64'
         uses: actions/upload-artifact@v4

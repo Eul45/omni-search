@@ -1,0 +1,2647 @@
+import { Button, VerticalBox, HorizontalBox, CheckBox, ComboBox, LineEdit, StandardListView, TabWidget, Slider, ScrollView, Palette } from "std-widgets.slint";
+
+component ToggleSwitch inherits Rectangle {
+    in-out property <bool> checked;
+    callback toggled;
+
+    width: 44px;
+    height: 20px;
+    border-radius: 10px;
+    background: checked ? #1d90f3 : #1a1a1a;
+    border-width: 1px;
+    border-color: checked ? #1d90f3 : #8a8a8a;
+
+    animate background { duration: 150ms; easing: ease-in-out; }
+    animate border-color { duration: 150ms; easing: ease-in-out; }
+
+    Rectangle {
+        x: checked ? parent.width - self.width - 4px : 4px;
+        y: (parent.height - self.height) / 2;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: checked ? #1a1a1a : #8a8a8a;
+
+        animate x { duration: 150ms; easing: ease-in-out; }
+        animate background { duration: 150ms; easing: ease-in-out; }
+    }
+
+    TouchArea {
+        clicked => {
+            checked = !checked;
+            toggled();
+        }
+    }
+}
+
+
+
+struct SlintAgent {
+    id: int,
+    name: string,
+    goal: string,
+}
+
+struct SlintSnippet {
+    id: int,
+    name: string,
+    keyword: string,
+    content: string,
+}
+
+export component SettingsWindow inherits Window {
+    title: "OmniSearch Lite Settings";
+    icon: @image-url("../icons/OmniSearchTrans_16.png");
+    min-width: 720px;
+    min-height: 500px;
+    preferred-width: 900px;
+    preferred-height: 580px;
+
+    in-out property <[SlintAgent]> available-agents;
+    callback launch-agent(int);
+    in-out property <[SlintSnippet]> snippets;
+    
+    // Properties to bind to Rust
+    in-out property <bool> run-on-startup;
+    in-out property <bool> hide-on-lose-focus;
+    in-out property <bool> show-taskbar;
+    in-out property <string> window-location;
+    in-out property <string> theme-mode;
+    in-out property <string> global-hotkey;
+    in-out property <string> hotkey-error;
+    in-out property <bool> hotkey-available: true;
+    
+    in-out property <int> window-width;
+    in-out property <int> item-height;
+    in-out property <int> search-bar-height;
+    in-out property <string> query-font-family;
+    in-out property <string> query-font-weight;
+    in-out property <int> query-font-size;
+    in-out property <string> result-title-font-family;
+    in-out property <string> result-title-font-weight;
+    in-out property <int> result-title-font-size;
+    in-out property <string> result-subtitle-font-family;
+    in-out property <string> result-subtitle-font-weight;
+    in-out property <int> result-subtitle-font-size;
+    in-out property <bool> show-placeholder;
+    in-out property <bool> plugin-circle-search;
+    in-out property <bool> plugin-text-expansions;
+    in-out property <bool> plugin-color-picker;
+    in-out property <bool> plugin-calculator;
+    // removed git & clipboard settings
+    in-out property <string> snippet-name;
+    in-out property <string> snippet-keyword;
+    in-out property <string> snippet-content;
+    in-out property <image> desktop-wallpaper;
+    in-out property <bool> has-desktop-wallpaper: false;
+    in-out property <bool> snippet-name-error: false;
+    in-out property <bool> snippet-content-error: false;
+
+    property <bool> edit-panel-expanded: false;
+    
+    // Plugin Info Expand states
+    in-out property <bool> show-circle-info: false;
+    in-out property <bool> show-text-info: false;
+    in-out property <bool> show-color-info: false;
+    in-out property <bool> show-calc-info: false;
+    
+    // Callbacks to Rust
+    callback save-settings();
+    callback add-snippet();
+    callback delete-snippet(int);
+    // Re-assemble + validate the hotkey from the four dropdown slots, then apply/save it.
+    callback apply-hotkey();
+    callback open-url(string);
+
+    // Hotkey dropdown models + selected values (built in Rust).
+    in-out property <[string]> slot1-model;
+    in-out property <[string]> slot2-model;
+    in-out property <[string]> slot34-model;
+    in-out property <string> slot1-val;
+    in-out property <string> slot2-val;
+    in-out property <string> slot3-val: "Ã¢â‚¬â€";
+    in-out property <string> slot4-val: "Ã¢â‚¬â€";
+
+    // Agent settings properties
+    in-out property <string> agent-api-key;
+    in-out property <string> agent-endpoint;
+    in-out property <string> agent-model;
+    in-out property <bool> agent-always-approve;
+    in-out property <image> agent-logo: @image-url("../icons/AgentLogo.png");
+
+    // Database settings properties
+    in-out property <string> db-last-indexed;
+    in-out property <int> db-file-count;
+    in-out property <string> db-status;
+    in-out property <bool> db-is-indexing;
+    in-out property <[string]> db-folders;
+    in-out property <[string]> db-ignored-folders;
+    in-out property <string> db-ignore-input;
+
+    // Database callbacks
+    callback add-folder();
+    callback remove-folder(int);
+    callback add-ignored-folder();
+    callback remove-ignored-folder(int);
+    callback rebuild-index();
+
+    in-out property <string> app-version: "1.1.0";
+
+    // Phone Sync properties
+    in-out property <bool> sync-server-running: false;
+    in-out property <string> sync-server-ip: "";
+    in-out property <int> sync-connected-clients: 0;
+    in-out property <string> sync-pairing-uri: "";
+    in-out property <bool> has-pending-pairing: false;
+    in-out property <string> pending-device-id: "";
+    in-out property <string> pending-device-name: "";
+    in-out property <image> sync-qr-image;
+    in-out property <bool> has-sync-qr-image: false;
+
+    // Transfer progress properties
+    in-out property <int> transfer-count: 0;
+    in-out property <string> transfer-name-1: "";
+    in-out property <int> transfer-progress-1: 0;
+    in-out property <string> transfer-status-1: "";
+    in-out property <string> transfer-name-2: "";
+    in-out property <int> transfer-progress-2: 0;
+    in-out property <string> transfer-status-2: "";
+    in-out property <string> transfer-name-3: "";
+    in-out property <int> transfer-progress-3: 0;
+    in-out property <string> transfer-status-3: "";
+    in-out property <string> transfer-name-4: "";
+    in-out property <int> transfer-progress-4: 0;
+    in-out property <string> transfer-status-4: "";
+    in-out property <string> transfer-name-5: "";
+    in-out property <int> transfer-progress-5: 0;
+    in-out property <string> transfer-status-5: "";
+
+    // Phone Sync callbacks
+    callback start-phone-sync-server();
+    callback stop-phone-sync-server();
+    callback approve-phone-pairing();
+    callback reject-phone-pairing();
+    callback open-sync-folder();
+    callback send-files-to-phone();
+
+    in-out property <int> current-page: 0;
+    in-out property <bool> show-api-key: false;
+
+    // Theme Tokens
+    property <bool> is-light: false; // Locked to dark mode for settings app
+    property <color> bg-color: is-light ? #FAFAFA : #1f242c;
+    property <color> sidebar-bg: is-light ? #F0F0F0 : #181c22;
+    property <color> card-bg: is-light ? #FFFFFF : #282e38;
+    
+    property <color> text-primary: is-light ? #111111 : #ffffff;
+    property <color> text-secondary: is-light ? #555555 : #cbd5e1;
+    property <color> text-muted: is-light ? #777777 : #94a3b8;
+    
+    property <color> hover-bg: is-light ? #E5E5E5 : #313844;
+    property <color> active-bg: is-light ? #D5D5D5 : #3a4352;
+    property <color> border-color: is-light ? #EAEAEA : #2d3440;
+
+    // Accent color
+    property <color> accent: #7ab3ff;
+
+    background: root.bg-color;
+
+    HorizontalBox {
+        padding: 0;
+        spacing: 0;
+        
+        // Ã¢â€â‚¬Ã¢â€â‚¬ Sidebar Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        Rectangle {
+            width: 230px;
+            background: root.sidebar-bg;
+            
+            // Vertical divider on the right
+            Rectangle {
+                x: parent.width - 1px;
+                y: 0;
+                width: 1px;
+                height: parent.height;
+                background: root.border-color;
+            }
+
+            VerticalBox {
+                padding: 0px;
+                spacing: 0px;
+
+                // App identity block
+                Rectangle {
+                    height: 140px;
+                    background: transparent;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../icons/OmniSearchTrans_small.png");
+                                width: 64px;
+                                height: 64px;
+                                image-fit: contain;
+                            }
+                        }
+                        
+                        HorizontalLayout {
+                            alignment: center;
+                            Text {
+                                text: "OmniSearch Lite";
+                                font-size: 16px;
+                                font-weight: 700;
+                                color: root.text-primary;
+                            }
+                        }
+                    }
+                }
+
+                // Thin divider
+                Rectangle { height: 1px; background: root.border-color; }
+
+                // Nav items
+                Rectangle { height: 12px; }
+
+                // Ã¢â€â‚¬Ã¢â€â‚¬ Nav item helper component would be ideal but Slint doesn't allow
+                // inline components, so we expand each one.
+
+                // General
+                nav-general := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 0 ? #353535 : (ta-general.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    // Left accent bar
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 0 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e713}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 0 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "General";
+                            font-size: 14px;
+                            font-weight: root.current-page == 0 ? 600 : 400;
+                            color: root.current-page == 0 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-general := TouchArea { clicked => { root.current-page = 0; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // Phone Sync (moved here, right after General)
+                nav-phone-sync := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 8 ? #353535 : (ta-phone-sync.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 8 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e8ea}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 8 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "Phone Sync";
+                            font-size: 14px;
+                            font-weight: root.current-page == 8 ? 600 : 400;
+                            color: root.current-page == 8 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-phone-sync := TouchArea { clicked => { root.current-page = 8; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // Appearance
+                nav-appearance := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 1 ? #353535 : (ta-appearance.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 1 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e771}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 1 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "Appearance";
+                            font-size: 14px;
+                            font-weight: root.current-page == 1 ? 600 : 400;
+                            color: root.current-page == 1 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-appearance := TouchArea { clicked => { root.current-page = 1; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // Hotkeys
+                nav-hotkeys := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 2 ? #353535 : (ta-hotkeys.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 2 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e765}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 2 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "Hotkeys";
+                            font-size: 14px;
+                            font-weight: root.current-page == 2 ? 600 : 400;
+                            color: root.current-page == 2 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-hotkeys := TouchArea { clicked => { root.current-page = 2; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // Agent
+                nav-agent := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 3 ? #353535 : (ta-agent.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 3 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e950}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 3 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "Agents";
+                            font-size: 14px;
+                            font-weight: root.current-page == 3 ? 600 : 400;
+                            color: root.current-page == 3 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-agent := TouchArea { clicked => { root.current-page = 3; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // Plugins
+                nav-plugins := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 4 ? #353535 : (ta-plugins.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 4 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e71d}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 4 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "Plugins";
+                            font-size: 14px;
+                            font-weight: root.current-page == 4 ? 600 : 400;
+                            color: root.current-page == 4 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-plugins := TouchArea { clicked => { root.current-page = 4; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // Config
+                nav-config := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 5 ? #353535 : (ta-config.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 5 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e713}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 5 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "Config";
+                            font-size: 14px;
+                            font-weight: root.current-page == 5 ? 600 : 400;
+                            color: root.current-page == 5 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-config := TouchArea { clicked => { root.current-page = 5; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // Database
+                nav-database := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 6 ? #353535 : (ta-database.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 6 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e8ce}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 6 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "Database";
+                            font-size: 14px;
+                            font-weight: root.current-page == 6 ? 600 : 400;
+                            color: root.current-page == 6 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-database := TouchArea { clicked => { root.current-page = 6; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+                Rectangle { height: 4px; }
+
+                // (Phone Sync was moved up to right after General)
+
+                Rectangle { vertical-stretch: 1; }
+
+                // Thin divider above About
+                Rectangle { height: 1px; background: root.border-color; }
+                Rectangle { height: 8px; }
+
+                // About
+                nav-about := Rectangle {
+                    height: 42px;
+                    border-radius: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    background: root.current-page == 7 ? #353535 : (ta-about.has-hover ? root.hover-bg : transparent);
+                    animate background { duration: 120ms; }
+                    Rectangle {
+                        x: 0px;
+                        y: 8px;
+                        width: root.current-page == 7 ? 3px : 0px;
+                        height: parent.height - 16px;
+                        border-radius: 2px;
+                        background: root.accent;
+                        animate width { duration: 160ms; easing: ease-in-out; }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "\u{e946}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 16px;
+                            color: root.current-page == 7 ? root.text-primary : root.text-muted;
+                            vertical-alignment: center;
+                            width: 18px;
+                        }
+                        Text {
+                            text: "About";
+                            font-size: 14px;
+                            font-weight: root.current-page == 7 ? 600 : 400;
+                            color: root.current-page == 7 ? root.text-primary : root.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ta-about := TouchArea { clicked => { root.current-page = 7; root.snippet-name-error = false; root.snippet-content-error = false; } }
+                }
+
+
+
+                Rectangle { height: 16px; }
+            }
+        }
+        
+        // Main Content Area
+        Rectangle {
+            background: root.bg-color;
+            
+            VerticalBox {
+                padding: 0;
+                spacing: 0;
+                
+                ScrollView {
+                    VerticalBox {
+                        alignment: start;
+                        padding: 24px;
+                        spacing: 12px;
+                    
+                    // General Page
+                    if root.current-page == 0: VerticalBox {
+                        alignment: start;
+                        spacing: 20px;
+
+                        // Page header
+                        VerticalBox {
+                            spacing: 4px;
+                            Text {
+                                text: "General";
+                                font-size: 30px;
+                                font-weight: 700;
+                                color: root.text-primary;
+                            }
+                        }
+
+                        // Section: Behavior
+                        VerticalBox {
+                            spacing: 2px;
+                            Text {
+                                text: "BEHAVIOR";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.text-muted;
+                                letter-spacing: 1px;
+                            }
+                            Rectangle { height: 6px; }
+
+                            // Run on startup row
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+                                height: 64px;
+                                HorizontalBox {
+                                    padding-left: 20px;
+                                    padding-right: 20px;
+                                    spacing: 16px;
+
+                                    VerticalBox {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text { text: "Run on startup"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "Launch OmniSearch Lite when Windows starts"; color: root.text-muted; font-size: 12px; }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    VerticalBox {
+                                        alignment: center;
+                                        ToggleSwitch {
+                                            checked <=> root.run-on-startup;
+                                            toggled => {
+                                                root.save-settings();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 6px; }
+
+                            // Hide on lose focus row
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+                                height: 64px;
+                                HorizontalBox {
+                                    padding-left: 20px;
+                                    padding-right: 20px;
+                                    spacing: 16px;
+
+                                    VerticalBox {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text { text: "Hide on lose focus"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "Dismiss launcher when it loses keyboard focus"; color: root.text-muted; font-size: 12px; }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    VerticalBox {
+                                        alignment: center;
+                                        ToggleSwitch {
+                                            checked <=> root.hide-on-lose-focus;
+                                            toggled => {
+                                                root.save-settings();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 6px; }
+
+                            // Show taskbar when OmniSearch is opened row
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+                                height: 64px;
+                                HorizontalBox {
+                                    padding-left: 20px;
+                                    padding-right: 20px;
+                                    spacing: 16px;
+
+                                    VerticalBox {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text { text: "Show taskbar when OmniSearch Lite is opened"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "Temporarily show taskbar when OmniSearch Lite is opened, useful for auto-hidden taskbars"; color: root.text-muted; font-size: 12px; }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    VerticalBox {
+                                        alignment: center;
+                                        ToggleSwitch {
+                                            checked <=> root.show-taskbar;
+                                            toggled => {
+                                                root.save-settings();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 6px; }
+
+                            // Search Window Location row
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+                                height: 72px;
+                                HorizontalBox {
+                                    padding-left: 20px;
+                                    padding-right: 20px;
+                                    spacing: 16px;
+
+                                    VerticalBox {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text { text: "Search window location"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "Monitor/position where the launcher window appears"; color: root.text-muted; font-size: 12px; }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    VerticalBox {
+                                        alignment: center;
+                                        ComboBox {
+                                            width: 220px;
+                                            height: 40px;
+                                            model: [
+                                                "Remember Last Position",
+                                                "Monitor with Mouse Cursor",
+                                                "Monitor with Focused Window",
+                                                "Primary Monitor",
+                                                "Custom Monitor"
+                                            ];
+                                            current-value: root.window-location;
+                                            selected(val) => {
+                                                root.window-location = val;
+                                                root.save-settings();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Section: AI Shortcuts
+                            VerticalBox {
+                                spacing: 12px;
+                                Text {
+                                    text: "AI SEARCH SHORTCUTS";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: root.text-muted;
+                                    letter-spacing: 1px;
+                                }
+
+                                Rectangle {
+                                    background: root.card-bg;
+                                    border-radius: 8px;
+                                    border-color: root.border-color;
+                                    border-width: 1px;
+
+                                    VerticalBox {
+                                        padding: 16px;
+                                        spacing: 10px;
+
+                                        Text { text: "Type any AI prefix in the launcher search bar to quickly open or query AI:"; color: root.text-muted; font-size: 12px; }
+                                        Text { text: "• chatgpt: <prompt>  —  Open ChatGPT with prompt prefilled"; color: root.text-primary; font-size: 13px; font-weight: 600; }
+                                        Text { text: "• claude: <prompt>   —  Open Claude AI with prompt prefilled"; color: root.text-primary; font-size: 13px; font-weight: 600; }
+                                        Text { text: "• grok: <prompt>     —  Open Grok AI with prompt prefilled"; color: root.text-primary; font-size: 13px; font-weight: 600; }
+                                        Text { text: "• eyux: <prompt>     —  Open EyuX AI with prompt prefilled"; color: root.text-primary; font-size: 13px; font-weight: 600; }
+                                        Text { text: "• gemini:            —  Open Google Gemini directly"; color: root.text-primary; font-size: 13px; font-weight: 600; }
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 40px; }
+                        }
+                    }
+                    
+                    // Appearance Page
+                    if root.current-page == 1: VerticalBox {
+                        alignment: start;
+                        spacing: 16px;
+                        
+                        Text { text: "Appearance"; font-size: 30px; font-weight: 700; color: root.text-primary; }
+                        
+                        // Preview & Edits Container (At the Top!)
+                        HorizontalBox {
+                            spacing: 16px;
+                            
+                            // Left Preview Area
+                            Rectangle {
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: root.border-color;
+                                height: 440px;
+                                horizontal-stretch: 1;
+                                clip: true;
+
+                                // Background image (User's wallpaper)
+                                if root.has-desktop-wallpaper : Image {
+                                    source: root.desktop-wallpaper;
+                                    image-fit: cover;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+
+                                // Fallback gradient if no wallpaper is loaded
+                                if !root.has-desktop-wallpaper : Rectangle {
+                                    background: @linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+                                    width: 100%;
+                                    height: 100%;
+                                }
+
+                                // The Mockup Launcher Popup (exactly matching the user's photos)
+                                Rectangle {
+                                    width: 440px;
+                                    height: 250px;
+                                    background: root.theme-mode == "Light" ? #ffffff : (root.theme-mode == "NordDarker" ? #232731 : (root.theme-mode == "Dark" ? #1c1c1c : #1f242c));
+                                    border-radius: 12px;
+                                    border-width: 1px;
+                                    border-color: root.theme-mode == "Light" ? #e0e0e0 : (root.theme-mode == "NordDarker" ? #3b4252 : (root.theme-mode == "Dark" ? #2d2d2d : #262b32));
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+
+                                    VerticalLayout {
+                                        padding: 0;
+                                        spacing: 0;
+                                        
+                                        // Mockup Search Input Box
+                                        Rectangle {
+                                            height: root.search-bar-height * 0.7px;
+
+                                            Rectangle {
+                                                y: parent.height - 1px;
+                                                height: 1px;
+                                                background: root.theme-mode == "Light" ? #f2f2f2 : (root.theme-mode == "NordDarker" ? #3b4252 : (root.theme-mode == "Dark" ? #2a2a2a : #2b333f));
+                                            }
+
+                                            HorizontalLayout {
+                                                padding-left: 16px;
+                                                padding-right: 16px;
+                                                spacing: 12px;
+                                                
+                                                // Search Icon
+                                                Text {
+                                                    text: "\u{e721}";
+                                                    font-family: "Segoe MDL2 Assets";
+                                                    font-size: 22px;
+                                                    color: root.theme-mode == "Light" ? #343434 : (root.theme-mode == "NordDarker" ? #d8d8d8 : (root.theme-mode == "Dark" ? #d8d8d8 : #f1f5fb));
+                                                    vertical-alignment: center;
+                                                }
+
+                                                // Search Text Placeholder or Caret cursor
+                                                if root.show-placeholder : Text {
+                                                    text: "Search files, folders, code, settings...";
+                                                    font-family: root.query-font-family;
+                                                    font-size: root.query-font-size * 0.65px;
+                                                    font-weight: root.query-font-weight == "Bold" ? 700 : (root.query-font-weight == "Semi-Bold" ? 600 : 400);
+                                                    color: root.theme-mode == "Light" ? #8e8e93 : (root.theme-mode == "NordDarker" ? #4c566a : #aab4c6);
+                                                    vertical-alignment: center;
+                                                }
+
+                                                if !root.show-placeholder : Rectangle {
+                                                    width: 2px;
+                                                    height: root.query-font-size * 0.75px;
+                                                    background: root.theme-mode == "Light" ? #000000 : (root.theme-mode == "NordDarker" ? #88c0d0 : (root.theme-mode == "Dark" ? #ffffff : #7ab3ff));
+                                                    opacity: 0.95;
+                                                }
+
+                                                Rectangle { } // Spacer
+                                            }
+                                        }
+
+                                        // Mockup Results Area
+                                        VerticalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            padding-top: 6px;
+                                            padding-bottom: 6px;
+                                            spacing: 4px;
+
+                                            // Mockup Item 1: Connect Phone
+                                            Rectangle {
+                                                height: 34px;
+                                                background: root.theme-mode == "Light" ? #e5e5e5 : (root.theme-mode == "NordDarker" ? #3b4252 : (root.theme-mode == "Dark" ? #2f2f2f : #262b32));
+                                                border-radius: 4px;
+                                                HorizontalLayout {
+                                                    padding-left: 8px;
+                                                    padding-right: 8px;
+                                                    spacing: 12px;
+                                                    Text { text: "\u{e8ea}"; font-family: "Segoe MDL2 Assets"; font-size: 14px; vertical-alignment: center; color: root.theme-mode == "Light" ? #1d4ed8 : #7ab3ff; }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        spacing: 0;
+                                                        Text { text: "Connect Phone"; font-size: 11px; font-weight: 600; color: root.theme-mode == "Light" ? #111111 : #ffffff; }
+                                                        Text { text: "Sync > Phone Connection"; font-size: 9px; color: root.theme-mode == "Light" ? #666666 : #bbbbbb; }
+                                                    }
+                                                    Rectangle { } // Spacer
+                                                    Text { text: "Sync"; font-size: 9px; color: root.theme-mode == "Light" ? #555555 : #999999; vertical-alignment: center; }
+                                                }
+                                            }
+
+                                            // Mockup Item 2: Browser Bookmarks
+                                            Rectangle {
+                                                height: 34px;
+                                                background: transparent;
+                                                border-radius: 4px;
+                                                HorizontalLayout {
+                                                    padding-left: 8px;
+                                                    padding-right: 8px;
+                                                    spacing: 12px;
+                                                    Text { text: "\u{e8a4}"; font-family: "Segoe MDL2 Assets"; font-size: 14px; vertical-alignment: center; color: root.theme-mode == "Light" ? #6b7280 : #9fb3d1; }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        spacing: 0;
+                                                        Text { text: "Browser Bookmarks"; font-size: 11px; font-weight: 600; color: root.theme-mode == "Light" ? #222222 : #d8dee9; }
+                                                        Text { text: "Browser > Bookmarks"; font-size: 9px; color: root.theme-mode == "Light" ? #888888 : #4c566a; }
+                                                    }
+                                                    Rectangle { } // Spacer
+                                                    Text { text: "Browser"; font-size: 9px; color: root.theme-mode == "Light" ? #777777 : #4c566a; vertical-alignment: center; }
+                                                }
+                                            }
+
+                                            // Mockup Item 3: Local Files
+                                            Rectangle {
+                                                height: 34px;
+                                                background: transparent;
+                                                border-radius: 4px;
+                                                HorizontalLayout {
+                                                    padding-left: 8px;
+                                                    padding-right: 8px;
+                                                    spacing: 12px;
+                                                    Text { text: "\u{e8b7}"; font-family: "Segoe MDL2 Assets"; font-size: 14px; vertical-alignment: center; color: root.theme-mode == "Light" ? #6b7280 : #9fb3d1; }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        spacing: 0;
+                                                        Text { text: "Local Files"; font-size: 11px; font-weight: 600; color: root.theme-mode == "Light" ? #222222 : #d8dee9; }
+                                                        Text { text: "Local > Files"; font-size: 9px; color: root.theme-mode == "Light" ? #888888 : #4c566a; }
+                                                    }
+                                                    Rectangle { } // Spacer
+                                                    Text { text: "File"; font-size: 9px; color: root.theme-mode == "Light" ? #777777 : #4c566a; vertical-alignment: center; }
+                                                }
+                                            }
+
+                                            // Mockup Item 4: Agents
+                                            Rectangle {
+                                                height: 34px;
+                                                background: transparent;
+                                                border-radius: 4px;
+                                                HorizontalLayout {
+                                                    padding-left: 8px;
+                                                    padding-right: 8px;
+                                                    spacing: 12px;
+                                                    Text { text: "\u{e950}"; font-family: "Segoe MDL2 Assets"; font-size: 14px; vertical-alignment: center; color: root.theme-mode == "Light" ? #6b7280 : #9fb3d1; }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        spacing: 0;
+                                                        Text { text: "Agents"; font-size: 11px; font-weight: 600; color: root.theme-mode == "Light" ? #222222 : #d8dee9; }
+                                                        Text { text: "AI > Agents"; font-size: 9px; color: root.theme-mode == "Light" ? #888888 : #4c566a; }
+                                                    }
+                                                    Rectangle { } // Spacer
+                                                    Text { text: "AI"; font-size: 9px; color: root.theme-mode == "Light" ? #777777 : #4c566a; vertical-alignment: center; }
+                                                }
+                                            }
+
+
+
+                                            // Mockup Item 5: Agent History
+                                            Rectangle {
+                                                height: 34px;
+                                                background: transparent;
+                                                border-radius: 4px;
+                                                HorizontalLayout {
+                                                    padding-left: 8px;
+                                                    padding-right: 8px;
+                                                    spacing: 12px;
+                                                    Text { text: "\u{e8d4}"; font-family: "Segoe MDL2 Assets"; font-size: 14px; vertical-alignment: center; color: root.theme-mode == "Light" ? #6b7280 : #9fb3d1; }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        spacing: 0;
+                                                        Text { text: "Agent History"; font-size: 11px; font-weight: 600; color: root.theme-mode == "Light" ? #222222 : #d8dee9; }
+                                                        Text { text: "AI > Agent runs"; font-size: 9px; color: root.theme-mode == "Light" ? #888888 : #4c566a; }
+                                                    }
+                                                    Rectangle { } // Spacer
+                                                    Text { text: "AI"; font-size: 9px; color: root.theme-mode == "Light" ? #777777 : #4c566a; vertical-alignment: center; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Edit Button top-right (Text based to prevent missing glyph box)
+                                Rectangle {
+                                    width: 48px;
+                                    height: 24px;
+                                    background: edit-btn-ta.has-hover ? #ffffff30 : #ffffff1a;
+                                    border-radius: 4px;
+                                    x: parent.width - self.width - 12px;
+                                    y: 12px;
+                                    
+                                    Text {
+                                        text: "Edit";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    
+                                    edit-btn-ta := TouchArea {
+                                        clicked => {
+                                            root.edit-panel-expanded = !root.edit-panel-expanded;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Right Edit Panel (Only if expanded)
+                            if root.edit-panel-expanded : Rectangle {
+                                width: 320px;
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: root.border-color;
+                                height: 440px;
+
+                                ScrollView {
+                                    VerticalBox {
+                                        padding: 16px;
+                                        spacing: 12px;
+                                        
+                                        Text { text: "Edit Layout & Fonts"; font-size: 15px; font-weight: 600; color: root.text-primary; }
+                                        
+                                        // Search Bar Height Slider
+                                        VerticalBox {
+                                            spacing: 4px;
+                                            HorizontalBox {
+                                                padding: 0;
+                                                Text { text: "Search Bar Height"; color: root.text-secondary; font-size: 12px; }
+                                                Rectangle { horizontal-stretch: 1; }
+                                                Text { text: root.search-bar-height + "px"; color: root.accent; font-size: 12px; font-weight: 600; }
+                                            }
+                                            Slider {
+                                                minimum: 40;
+                                                maximum: 80;
+                                                value: root.search-bar-height;
+                                                changed(val) => {
+                                                    root.search-bar-height = val;
+                                                    root.save-settings();
+                                                }
+                                            }
+                                        }
+
+                                        // Query Box Font Family & Weight & Size
+                                        VerticalBox {
+                                            spacing: 4px;
+                                            Text { text: "Query Font Family"; color: root.text-secondary; font-size: 12px; }
+                                            ComboBox {
+                                                width: 100%;
+                                                height: 38px;
+                                                model: ["Segoe UI Variable", "Arial", "Consolas", "Outfit"];
+                                                current-value: root.query-font-family;
+                                                selected(val) => {
+                                                    root.query-font-family = val;
+                                                    root.save-settings();
+                                                }
+                                            }
+                                            Text { text: "Query Font Weight"; color: root.text-secondary; font-size: 12px; }
+                                            ComboBox {
+                                                width: 100%;
+                                                height: 38px;
+                                                model: ["Regular", "Semi-Bold", "Bold"];
+                                                current-value: root.query-font-weight;
+                                                selected(val) => {
+                                                    root.query-font-weight = val;
+                                                    root.save-settings();
+                                                }
+                                            }
+                                            HorizontalBox {
+                                                padding: 0;
+                                                Text { text: "Query Font Size"; color: root.text-secondary; font-size: 12px; }
+                                                Rectangle { horizontal-stretch: 1; }
+                                                Text { text: root.query-font-size + "px"; color: root.accent; font-size: 12px; font-weight: 600; }
+                                            }
+                                            Slider {
+                                                minimum: 14;
+                                                maximum: 32;
+                                                value: root.query-font-size;
+                                                changed(val) => {
+                                                    root.query-font-size = val;
+                                                    root.save-settings();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Launcher theme row
+                        Text { text: "Launcher Theme"; font-size: 13px; color: root.text-muted; }
+                        Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            HorizontalBox {
+                                padding: 16px;
+                                spacing: 12px;
+                                alignment: start;
+                                // Light card
+                                Rectangle {
+                                    height: 90px;
+                                    width: 130px;
+                                    border-radius: 8px;
+                                    border-width: root.theme-mode == "Light" ? 2px : 1px;
+                                    border-color: root.theme-mode == "Light" ? #1d90f3 : root.border-color;
+                                    background: #ffffff;
+                                    VerticalBox {
+                                        padding: 10px;
+                                        spacing: 6px;
+                                        Text { text: "Light"; color: #111111; font-weight: 600; font-size: 12px; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #f2f2f2; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #e5e5e5; }
+                                    }
+                                    TouchArea { clicked => { root.theme-mode = "Light"; root.save-settings(); } }
+                                }
+                                // Dark card
+                                Rectangle {
+                                    height: 90px;
+                                    width: 130px;
+                                    border-radius: 8px;
+                                    border-width: root.theme-mode == "Dark" ? 2px : 1px;
+                                    border-color: root.theme-mode == "Dark" ? #1d90f3 : root.border-color;
+                                    background: #1e1e1e;
+                                    VerticalBox {
+                                        padding: 10px;
+                                        spacing: 6px;
+                                        Text { text: "Dark"; color: #ffffff; font-weight: 600; font-size: 12px; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #2f2f2f; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #3a3a3a; }
+                                    }
+                                    TouchArea { clicked => { root.theme-mode = "Dark"; root.save-settings(); } }
+                                }
+                                 // Nord card
+                                Rectangle {
+                                    height: 90px;
+                                    width: 130px;
+                                    border-radius: 8px;
+                                    border-width: root.theme-mode == "NordDarker" ? 2px : 1px;
+                                    border-color: root.theme-mode == "NordDarker" ? #1d90f3 : root.border-color;
+                                    background: #2e3440;
+                                    VerticalBox {
+                                        padding: 10px;
+                                        spacing: 6px;
+                                        Text { text: "Nord Dark"; color: #e5e9f0; font-weight: 600; font-size: 12px; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #3b4252; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #4c566a; }
+                                    }
+                                    TouchArea { clicked => { root.theme-mode = "NordDarker"; root.save-settings(); } }
+                                }
+                                // Omni card
+                                Rectangle {
+                                    height: 90px;
+                                    width: 130px;
+                                    border-radius: 8px;
+                                    border-width: root.theme-mode == "Omni" ? 2px : 1px;
+                                    border-color: root.theme-mode == "Omni" ? #1d90f3 : root.border-color;
+                                    background: #1f242c;
+                                    VerticalBox {
+                                        padding: 10px;
+                                        spacing: 6px;
+                                        Text { text: "Omni Dark"; color: #f1f5fb; font-weight: 600; font-size: 12px; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #262b32; }
+                                        Rectangle { height: 16px; border-radius: 4px; background: #2b333f; }
+                                    }
+                                    TouchArea { clicked => { root.theme-mode = "Omni"; root.save-settings(); } }
+                                }
+                            }
+                        }
+
+                        // Show placeholder setting
+                        Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            height: 64px;
+                            HorizontalBox {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 16px;
+                                VerticalBox {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text { text: "Show placeholder"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                    Text { text: "Display placeholder when query is empty"; color: root.text-muted; font-size: 12px; }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                VerticalBox {
+                                    alignment: center;
+                                    ToggleSwitch {
+                                        checked <=> root.show-placeholder;
+                                        toggled => {
+                                            root.save-settings();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bottom Spacer
+                        Rectangle { height: 60px; }
+                    }
+                    
+                    // Hotkeys Page
+                    if root.current-page == 2: VerticalBox {
+                        alignment: start;
+                        spacing: 24px;
+
+                        // Header
+                        VerticalBox {
+                            spacing: 4px;
+                            Text { text: "Hotkeys"; font-size: 30px; font-weight: 700; color: root.text-primary; }
+                        }
+
+                        // Open launcher hotkey card Ã¢â‚¬â€ four dropdowns (slots 1 & 2 required)
+                        Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 14px;
+
+                                HorizontalBox {
+                                    spacing: 16px;
+                                    padding: 0;
+
+                                    VerticalBox {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text { text: "Open launcher"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "Toggles the search window"; color: root.text-muted; font-size: 12px; }
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+
+                                    Rectangle {
+                                        height: 34px;
+                                        min-width: 150px;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.border-color;
+                                        background: root.bg-color;
+                                        Text {
+                                            text: root.global-hotkey;
+                                            color: root.text-primary;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+
+                                    ComboBox {
+                                        width: 110px;
+                                        height: 40px;
+                                        model: root.slot1-model;
+                                        current-value <=> root.slot1-val;
+                                        selected => { root.apply-hotkey(); }
+                                    }
+
+                                    ComboBox {
+                                        width: 110px;
+                                        height: 40px;
+                                        model: root.slot2-model;
+                                        current-value <=> root.slot2-val;
+                                        selected => { root.apply-hotkey(); }
+                                    }
+                                    ComboBox {
+                                        width: 110px;
+                                        height: 40px;
+                                        model: root.slot34-model;
+                                        current-value <=> root.slot3-val;
+                                        selected => { root.apply-hotkey(); }
+                                    }
+                                    ComboBox {
+                                        width: 110px;
+                                        height: 40px;
+                                        model: root.slot34-model;
+                                        current-value <=> root.slot4-val;
+                                        selected => { root.apply-hotkey(); }
+                                    }
+                                    
+                                    // Pushes all ComboBoxes to the left cleanly
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 6px; }
+
+                        // Availability banner Ã¢â‚¬â€ validates against real Win32 global hotkey registration.
+                        if root.hotkey-error != "": Rectangle {
+                            height: 42px;
+                            border-radius: 8px;
+                            background: root.hotkey-available ? #12351f : #3a1d1d;
+                            border-color: root.hotkey-available ? #1f7a3a : #7f1d1d;
+                            border-width: 1px;
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                Text {
+                                    text: root.hotkey-error;
+                                    color: root.hotkey-available ? #bbf7d0 : #fecaca;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Tip text
+                        HorizontalLayout {
+                            spacing: 6px;
+                            padding-left: 4px;
+                            Text {
+                                text: "Pick a modifier and a key. Slots 1 & 2 are required; 3 & 4 are optional. Changes apply immediately.";
+                                color: root.text-muted;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    
+                    // Agent Page
+                    if root.current-page == 3: VerticalBox {
+                        alignment: start;
+                        spacing: 20px;
+
+                        // Page header
+                        VerticalBox {
+                            spacing: 4px;
+                            Text {
+                                text: "Agents";
+                                font-size: 30px;
+                                font-weight: 700;
+                                color: root.text-primary;
+                            }
+                        }
+
+                        // Section: Available Agents
+                        VerticalBox {
+                            spacing: 12px;
+                            Text {
+                                text: "AVAILABLE AGENTS";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.text-muted;
+                                letter-spacing: 1px;
+                            }
+                            
+                            for agent in root.available-agents : Rectangle {
+                                height: 64px;
+                                background: agent-card-ta.has-hover ? root.hover-bg : root.card-bg;
+                                border-radius: 8px;
+                                border-color: agent-card-ta.has-hover ? root.accent : root.border-color;
+                                border-width: 1px;
+                                
+                                animate background { duration: 150ms; easing: ease-in-out; }
+                                animate border-color { duration: 150ms; easing: ease-in-out; }
+                                
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+                                    spacing: 16px;
+                                    
+                                    // Avatar/Icon for Agent
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 36px;
+                                            height: 36px;
+                                            border-radius: 8px;
+                                            clip: true;
+                                            
+                                            Image {
+                                                source: root.agent-logo;
+                                                width: 36px;
+                                                height: 36px;
+                                                image-fit: contain;
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Name and Goal
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text {
+                                            text: "@" + agent.name;
+                                            color: root.text-primary;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                        }
+                                        Text {
+                                            text: agent.goal;
+                                            color: root.text-muted;
+                                            font-size: 12px;
+                                        }
+                                    }
+                                    
+                                    Rectangle { horizontal-stretch: 1; }
+                                    
+                                    // Premium Message Pill Button
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            height: 28px;
+                                            background: agent-card-ta.has-hover ? root.accent : transparent;
+                                            border-radius: 12px;
+                                            border-width: 1px;
+                                            border-color: root.accent;
+                                            
+                                            animate background { duration: 150ms; easing: ease-in-out; }
+                                            
+                                            HorizontalLayout {
+                                                padding-left: 12px;
+                                                padding-right: 12px;
+                                                alignment: center;
+                                                
+                                                Text {
+                                                    text: "Message";
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    color: agent-card-ta.has-hover ? #1e1e1e : root.accent;
+                                                    vertical-alignment: center;
+                                                    horizontal-alignment: center;
+                                                    
+                                                    animate color { duration: 150ms; easing: ease-in-out; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                agent-card-ta := TouchArea {
+                                    clicked => {
+                                        root.launch-agent(agent.id);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section: API Settings
+                        VerticalBox {
+                            spacing: 12px;
+                            Text {
+                                text: "AI & ENDPOINT CONFIGURATION";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.text-muted;
+                                letter-spacing: 1px;
+                            }
+                            
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+                                
+                                VerticalBox {
+                                    padding: 20px;
+                                    spacing: 16px;
+                                    
+                                    // Quick Presets Row
+                                    VerticalBox {
+                                        spacing: 6px;
+                                        Text { text: "Quick Presets"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "Select a provider to automatically prefill standard endpoints and model options"; color: root.text-muted; font-size: 12px; }
+                                        HorizontalBox {
+                                            padding: 0;
+                                            spacing: 10px;
+                                            Button {
+                                                text: "Google Gemini";
+                                                clicked => {
+                                                    root.agent-endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+                                                    root.agent-model = "gemini-2.5-flash";
+                                                    root.save-settings();
+                                                }
+                                            }
+                                            Button {
+                                                text: "OpenAI GPT-4o-mini";
+                                                clicked => {
+                                                    root.agent-endpoint = "https://api.openai.com/v1/chat/completions";
+                                                    root.agent-model = "gpt-4o-mini";
+                                                    root.save-settings();
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // API Key Row
+                                    VerticalBox {
+                                        spacing: 6px;
+                                        Text { text: "API Key"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "OpenAI, Gemini, or DeepSeek API Key"; color: root.text-muted; font-size: 12px; }
+                                        HorizontalBox {
+                                            padding: 0;
+                                            spacing: 8px;
+                                            LineEdit {
+                                                text: root.agent-api-key;
+                                                placeholder-text: "sk-...";
+                                                input-type: root.show-api-key ? InputType.text : InputType.password;
+                                                edited(t) => {
+                                                    root.agent-api-key = t;
+                                                    root.save-settings();
+                                                }
+                                            }
+                                            Button {
+                                                text: root.show-api-key ? "Hide" : "Show";
+                                                width: 60px;
+                                                clicked => { root.show-api-key = !root.show-api-key; }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Endpoint Row
+                                    VerticalBox {
+                                        spacing: 6px;
+                                        Text { text: "API Endpoint"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "Target endpoint URL for OpenAI-compatible chat completions"; color: root.text-muted; font-size: 12px; }
+                                        LineEdit {
+                                            text: root.agent-endpoint;
+                                            placeholder-text: "https://api.deepseek.com/chat/completions";
+                                            edited(t) => {
+                                                root.agent-endpoint = t;
+                                                root.save-settings();
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Model Row
+                                    VerticalBox {
+                                        spacing: 6px;
+                                        Text { text: "Model Name"; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                        Text { text: "The name of the model to request"; color: root.text-muted; font-size: 12px; }
+                                        LineEdit {
+                                            text: root.agent-model;
+                                            placeholder-text: "deepseek-chat";
+                                            edited(t) => {
+                                                root.agent-model = t;
+                                                root.save-settings();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Plugins Page
+                    if root.current-page == 4: VerticalBox {
+                        alignment: start;
+                        spacing: 12px;
+                        Text { text: "Plugins"; font-size: 30px; font-weight: 700; color: root.text-primary; }
+
+                        VerticalBox {
+                            spacing: 6px;
+                            Text { text: "ENABLED PLUGINS"; font-size: 11px; font-weight: 600; color: root.text-muted; letter-spacing: 1px; }
+
+                            Rectangle {
+                                background: root.card-bg; border-radius: 8px; border-color: root.border-color; border-width: 1px;
+                                height: root.show-circle-info ? 110px : 54px;
+                                animate height { duration: 150ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 0;
+                                    alignment: root.show-circle-info ? start : center;
+                                    HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-top: 10px; padding-bottom: 10px; spacing: 12px;
+                                        Text { text: "\u{e722}"; font-family: "Segoe MDL2 Assets"; font-size: 18px; color: root.accent; vertical-alignment: center; width: 24px; }
+                                        VerticalLayout { alignment: center; spacing: 0; Text { text: "Circle to Search"; color: root.text-primary; font-size: 13px; font-weight: 600; } Text { text: "Select part of the screen and search it visually"; color: root.text-muted; font-size: 11px; } }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 22px; height: 22px; border-radius: 11px;
+                                                background: circle-i-touch.has-hover ? root.border-color : transparent;
+                                                Text {
+                                                    text: "\u{e946}";
+                                                    font-family: "Segoe MDL2 Assets";
+                                                    font-size: 14px;
+                                                    color: root.show-circle-info ? root.accent : (circle-i-touch.has-hover ? root.text-primary : root.text-muted);
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                circle-i-touch := TouchArea {
+                                                    clicked => {
+                                                        root.show-circle-info = !root.show-circle-info;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout { alignment: center; ToggleSwitch { checked <=> root.plugin-circle-search; toggled => { root.save-settings(); } } }
+                                    }
+                                    if root.show-circle-info : HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-bottom: 10px; spacing: 12px;
+                                        Text {
+                                            text: "Trigger: click the Lens button in the launcher search bar or press Alt + C. This freezes the screen so you can drag a selection box to search visually.";
+                                            color: root.text-muted;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                background: root.card-bg; border-radius: 8px; border-color: root.border-color; border-width: 1px;
+                                height: root.show-text-info ? 110px : 54px;
+                                animate height { duration: 150ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 0;
+                                    alignment: root.show-text-info ? start : center;
+                                    HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-top: 10px; padding-bottom: 10px; spacing: 12px;
+                                        Text { text: "\u{e8d2}"; font-family: "Segoe MDL2 Assets"; font-size: 18px; color: root.accent; vertical-alignment: center; width: 24px; }
+                                        VerticalLayout { alignment: center; spacing: 0; Text { text: "Text Expansions"; color: root.text-primary; font-size: 13px; font-weight: 600; } Text { text: "Reusable snippets triggered from launcher search"; color: root.text-muted; font-size: 11px; } }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 22px; height: 22px; border-radius: 11px;
+                                                background: snip-i-touch.has-hover ? root.border-color : transparent;
+                                                Text {
+                                                    text: "\u{e946}";
+                                                    font-family: "Segoe MDL2 Assets";
+                                                    font-size: 14px;
+                                                    color: root.show-text-info ? root.accent : (snip-i-touch.has-hover ? root.text-primary : root.text-muted);
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                snip-i-touch := TouchArea {
+                                                    clicked => {
+                                                        root.show-text-info = !root.show-text-info;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout { alignment: center; ToggleSwitch { checked <=> root.plugin-text-expansions; toggled => { root.save-settings(); } } }
+                                    }
+                                    if root.show-text-info : HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-bottom: 10px; spacing: 12px;
+                                        Text {
+                                            text: "Trigger: Type your custom expansion keyword (or 'snip:' to browse all) in the launcher and press Enter. The expansion text is immediately copied and pasted.";
+                                            color: root.text-muted;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                background: root.card-bg; border-radius: 8px; border-color: root.border-color; border-width: 1px;
+                                height: root.show-color-info ? 110px : 54px;
+                                animate height { duration: 150ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 0;
+                                    alignment: root.show-color-info ? start : center;
+                                    HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-top: 10px; padding-bottom: 10px; spacing: 12px;
+                                        Text { text: "\u{e790}"; font-family: "Segoe MDL2 Assets"; font-size: 18px; color: root.accent; vertical-alignment: center; width: 24px; }
+                                        VerticalLayout { alignment: center; spacing: 0; Text { text: "Color Picker"; color: root.text-primary; font-size: 13px; font-weight: 600; } Text { text: "Pick a pixel color and copy its hex value"; color: root.text-muted; font-size: 11px; } }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 22px; height: 22px; border-radius: 11px;
+                                                background: color-i-touch.has-hover ? root.border-color : transparent;
+                                                Text {
+                                                    text: "\u{e946}";
+                                                    font-family: "Segoe MDL2 Assets";
+                                                    font-size: 14px;
+                                                    color: root.show-color-info ? root.accent : (color-i-touch.has-hover ? root.text-primary : root.text-muted);
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                color-i-touch := TouchArea {
+                                                    clicked => {
+                                                        root.show-color-info = !root.show-color-info;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout { alignment: center; ToggleSwitch { checked <=> root.plugin-color-picker; toggled => { root.save-settings(); } } }
+                                    }
+                                    if root.show-color-info : HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-bottom: 10px; spacing: 12px;
+                                        Text {
+                                            text: "Trigger: Type 'color' or 'color picker' in the launcher and press Enter. This launches a pixel magnifier tool; clicking copies the selected color's hex code.";
+                                            color: root.text-muted;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                background: root.card-bg; border-radius: 8px; border-color: root.border-color; border-width: 1px;
+                                height: root.show-calc-info ? 110px : 54px;
+                                animate height { duration: 150ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 0;
+                                    alignment: root.show-calc-info ? start : center;
+                                    HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-top: 10px; padding-bottom: 10px; spacing: 12px;
+                                        Text { text: "\u{e8ef}"; font-family: "Segoe MDL2 Assets"; font-size: 18px; color: root.accent; vertical-alignment: center; width: 24px; }
+                                        VerticalLayout { alignment: center; spacing: 0; Text { text: "Calculator"; color: root.text-primary; font-size: 13px; font-weight: 600; } Text { text: "Inline math and unit conversion results"; color: root.text-muted; font-size: 11px; } }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 22px; height: 22px; border-radius: 11px;
+                                                background: calc-i-touch.has-hover ? root.border-color : transparent;
+                                                Text {
+                                                    text: "\u{e946}";
+                                                    font-family: "Segoe MDL2 Assets";
+                                                    font-size: 14px;
+                                                    color: root.show-calc-info ? root.accent : (calc-i-touch.has-hover ? root.text-primary : root.text-muted);
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                calc-i-touch := TouchArea {
+                                                    clicked => {
+                                                        root.show-calc-info = !root.show-calc-info;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout { alignment: center; ToggleSwitch { checked <=> root.plugin-calculator; toggled => { root.save-settings(); } } }
+                                    }
+                                    if root.show-calc-info : HorizontalBox {
+                                        padding-left: 16px; padding-right: 16px; padding-bottom: 10px; spacing: 12px;
+                                        Text {
+                                            text: "Trigger: Type any formula or math equation directly in the search bar (e.g. 'sqrt(16) * 12' or '15% of 350'). The parsed result is shown inline immediately.";
+                                            color: root.text-muted;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                            // removed git and clipboard settings cards
+                        }
+                    }
+
+                    // Config Page
+                    if root.current-page == 5: VerticalBox {
+                        alignment: start;
+                        spacing: 22px;
+                        Text { text: "Config"; font-size: 34px; font-weight: 700; color: root.text-primary; }
+
+                        VerticalBox {
+                            spacing: 14px;
+                            HorizontalBox {
+                                Text { text: "TEXT EXPANSIONS"; font-size: 12px; font-weight: 700; color: root.text-muted; letter-spacing: 1px; }
+                                Rectangle { horizontal-stretch: 1; }
+                                Text { text: root.snippets.length + " saved"; font-size: 12px; color: root.text-muted; }
+                            }
+                            Rectangle {
+                                background: root.card-bg; border-radius: 10px; border-color: root.border-color; border-width: 1px;
+                                VerticalBox {
+                                    padding: 18px; spacing: 14px;
+                                    VerticalBox {
+                                        spacing: 4px;
+                                        Text { text: "Add expansion"; color: root.text-primary; font-size: 16px; font-weight: 700; }
+                                        Text { text: "Type the trigger in OmniSearch Lite, press Enter, and the saved text is pasted into the previous app."; color: root.text-muted; font-size: 12px; }
+                                    }
+                                    VerticalBox {
+                                        padding: 0; spacing: 12px;
+                                        HorizontalBox {
+                                            padding: 0; spacing: 10px;
+                                            HorizontalBox {
+                                                padding: 0; spacing: 12px; horizontal-stretch: 3;
+                                                Text { text: "Name"; color: root.text-muted; font-size: 12px; font-weight: 600; width: 110px; vertical-alignment: center; }
+                                                Rectangle {
+                                                    height: 34px;
+                                                    border-width: 1.5px;
+                                                    border-color: root.snippet-name-error ? #ff4d4d : transparent;
+                                                    border-radius: 4px;
+                                                    LineEdit {
+                                                        width: 100%; height: 100%;
+                                                        text <=> root.snippet-name; placeholder-text: "Work email";
+                                                        edited => { root.snippet-name-error = false; }
+                                                    }
+                                                }
+                                            }
+                                            HorizontalBox {
+                                                padding: 0; spacing: 12px; horizontal-stretch: 1;
+                                                Text { text: "Trigger"; color: root.text-muted; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                                                LineEdit { text <=> root.snippet-keyword; placeholder-text: "!email"; height: 34px; }
+                                            }
+                                        }
+                                        HorizontalBox {
+                                            padding: 0; spacing: 12px;
+                                            Text { text: "Expansion text"; color: root.text-muted; font-size: 12px; font-weight: 600; width: 110px; vertical-alignment: center; }
+                                            Rectangle {
+                                                height: 40px;
+                                                border-width: 1.5px;
+                                                border-color: root.snippet-content-error ? #ff4d4d : transparent;
+                                                border-radius: 4px;
+                                                LineEdit {
+                                                    width: 100%; height: 100%;
+                                                    text <=> root.snippet-content; placeholder-text: "Text to paste";
+                                                    edited => { root.snippet-content-error = false; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    HorizontalBox {
+                                        padding: 0;
+                                        Text { text: "Name and expansion text are required. Empty trigger uses the name."; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Button {
+                                                text: "Add expansion";
+                                                clicked => {
+                                                    root.snippet-name-error = root.snippet-name == "";
+                                                    root.snippet-content-error = root.snippet-content == "";
+                                                    if (!root.snippet-name-error && !root.snippet-content-error) {
+                                                        root.add-snippet();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            for snippet[i] in root.snippets: Rectangle {
+                                background: root.card-bg; border-radius: 10px; border-color: root.border-color; border-width: 1px;
+                                HorizontalBox {
+                                    padding-top: 14px; padding-bottom: 14px;
+                                    padding-left: 18px; padding-right: 16px;
+                                    spacing: 16px;
+                                    Rectangle {
+                                        width: 96px; height: 30px; border-radius: 8px; background: root.hover-bg; border-color: root.accent; border-width: 1px;
+                                        Text { text: snippet.keyword; color: root.accent; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text {
+                                        text: snippet.name;
+                                        color: root.text-primary;
+                                        font-size: 15px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                        visible: snippet.name != snippet.keyword;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    Text { text: snippet.content; color: root.accent; font-size: 14px; font-weight: 600; overflow: elide; vertical-alignment: center; max-width: 300px; horizontal-alignment: right; }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Button { text: "Delete"; clicked => { root.delete-snippet(snippet.id); } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Database Page
+                    if root.current-page == 6: VerticalBox {
+                        alignment: start;
+                        spacing: 20px;
+
+                        // Page header
+                        VerticalBox {
+                            spacing: 4px;
+                            Text {
+                                text: "Database";
+                                font-size: 30px;
+                                font-weight: 700;
+                                color: root.text-primary;
+                            }
+                        }
+
+                        // Section: Status & Statistics
+                        VerticalBox {
+                            spacing: 12px;
+                            Text {
+                                text: "STATUS & STATISTICS";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.text-muted;
+                                letter-spacing: 1px;
+                            }
+                            
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+                                
+                                VerticalBox {
+                                    padding: 16px;
+                                    spacing: 16px;
+                                    
+                                    // Row 1: Status
+                                    HorizontalBox {
+                                        padding: 0;
+                                        spacing: 12px;
+                                        alignment: start;
+                                        
+                                        VerticalBox {
+                                            padding: 0;
+                                            spacing: 4px;
+                                            Text {
+                                                text: "Index Status";
+                                                color: root.text-muted;
+                                                font-size: 12px;
+                                                font-weight: 500;
+                                            }
+                                            HorizontalBox {
+                                                padding: 0;
+                                                spacing: 8px;
+                                                alignment: start;
+                                                
+                                                // Live indicator light
+                                                Rectangle {
+                                                    width: 10px;
+                                                    height: 10px;
+                                                    border-radius: 5px;
+                                                    background: root.db-is-indexing ? #007acc : #4caf50;
+                                                }
+                                                
+                                                Text {
+                                                    text: root.db-is-indexing ? root.db-status : (root.db-status == "Idle" ? "Ready (Up to date)" : root.db-status);
+                                                    color: root.db-is-indexing ? #007acc : root.text-primary;
+                                                    font-size: 14px;
+                                                    font-weight: 600;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Separator line
+                                    Rectangle {
+                                        height: 1px;
+                                        background: root.border-color;
+                                    }
+                                    
+                                    // Row 2: Statistics
+                                    HorizontalBox {
+                                        padding: 0;
+                                        spacing: 32px;
+                                        
+                                        VerticalBox {
+                                            padding: 0;
+                                            spacing: 4px;
+                                            Text {
+                                                text: "Indexed Items";
+                                                color: root.text-muted;
+                                                font-size: 12px;
+                                                font-weight: 500;
+                                            }
+                                            Text {
+                                                text: "" + root.db-file-count;
+                                                color: root.text-primary;
+                                                font-size: 20px;
+                                                font-weight: 700;
+                                            }
+                                        }
+                                        
+                                        VerticalBox {
+                                            padding: 0;
+                                            spacing: 4px;
+                                            Text {
+                                                text: "Last Rebuild Completed";
+                                                color: root.text-muted;
+                                                font-size: 12px;
+                                                font-weight: 500;
+                                            }
+                                            Text {
+                                                text: root.db-last-indexed;
+                                                color: root.text-primary;
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section: Folders
+                        VerticalBox {
+                            spacing: 12px;
+                            Text {
+                                text: "INDEXED DIRECTORIES";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.text-muted;
+                                letter-spacing: 1px;
+                            }
+                            
+                            // Add/Rebuild Actions
+                            HorizontalBox {
+                                padding: 0;
+                                spacing: 10px;
+                                Button {
+                                    text: "Add Directory...";
+                                    clicked => { root.add-folder(); }
+                                }
+                                Button {
+                                    text: "Rebuild Index Now";
+                                    enabled: !root.db-is-indexing;
+                                    clicked => { root.rebuild-index(); }
+                                }
+                            }
+                            
+                            // List of directories
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+                                
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 8px;
+                                    if root.db-folders.length == 0: Text {
+                                        text: "No indexed directories configured";
+                                        color: root.text-muted;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        height: 40px;
+                                    }
+                                    for folder[idx] in root.db-folders: Rectangle {
+                                        background: root.hover-bg;
+                                        border-radius: 6px;
+                                        height: 38px;
+                                        HorizontalBox {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            Text {
+                                                text: folder;
+                                                color: root.text-primary;
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                            }
+                                            Rectangle { horizontal-stretch: 1; }
+                                            Button {
+                                                text: "Remove";
+                                                width: 70px;
+                                                clicked => {
+                                                    root.remove-folder(idx);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section: Ignored folders
+                        VerticalBox {
+                            spacing: 12px;
+                            Text {
+                                text: "IGNORED FOLDER NAMES";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.text-muted;
+                                letter-spacing: 1px;
+                            }
+
+                            Rectangle {
+                                background: root.card-bg;
+                                border-radius: 8px;
+                                border-color: root.border-color;
+                                border-width: 1px;
+
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 8px;
+
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        LineEdit {
+                                            text <=> root.db-ignore-input;
+                                            placeholder-text: "node_modules or .angular";
+                                            height: 34px;
+                                        }
+                                        Button {
+                                            text: "Add";
+                                            width: 72px;
+                                            clicked => { root.add-ignored-folder(); }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "Names match folders anywhere under indexed directories.";
+                                        color: root.text-muted;
+                                        font-size: 12px;
+                                    }
+
+                                    if root.db-ignored-folders.length == 0: Text {
+                                        text: "No ignored folder names configured";
+                                        color: root.text-muted;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        height: 32px;
+                                    }
+                                    for folder[idx] in root.db-ignored-folders: Rectangle {
+                                        background: root.hover-bg;
+                                        border-radius: 6px;
+                                        height: 38px;
+                                        HorizontalBox {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            Text {
+                                                text: folder;
+                                                color: root.text-primary;
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                            }
+                                            Rectangle { horizontal-stretch: 1; }
+                                            Button {
+                                                text: "Remove";
+                                                width: 70px;
+                                                clicked => {
+                                                    root.remove-ignored-folder(idx);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // About Page
+                    if root.current-page == 7: VerticalBox {
+                        alignment: start;
+                        spacing: 24px;
+                        Text { text: "About"; font-size: 30px; font-weight: 700; color: root.text-primary; }
+                        
+                        // Card 1: Version & Sponsors
+                        Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            height: 110px;
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 16px;
+                                
+                                // Left side
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 12px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text { text: root.app-version; font-size: 18px; font-weight: 600; color: root.text-primary; }
+                                        Text { text: "Version"; font-size: 13px; color: root.text-muted; }
+                                    }
+                                }
+                                
+                                Rectangle { horizontal-stretch: 1; }
+                                
+                                // Right side
+                                HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 12px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 8px;
+                                        Button {
+                                            width: 180px;
+                                            text: "Become a Sponsor";
+                                            primary: true;
+                                            clicked => { root.open-url("https://github.com/sponsors/Eul45"); }
+                                        }
+                                        Button {
+                                            width: 180px;
+                                            text: "Buy Me a Coffee";
+                                            clicked => { root.open-url("https://buymeacoffee.com/eyuelengida"); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Card 2: Links
+                        Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            height: 64px;
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 16px;
+                                
+                                // Left side
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 12px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text { text: "Website"; font-size: 18px; font-weight: 600; color: root.text-primary; }
+                                    }
+                                }
+                                
+                                Rectangle { horizontal-stretch: 1; }
+                                
+                                // Right side
+                                HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 16px;
+                                    
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "Website";
+                                            color: website-ta.has-hover ? #4daaf8 : #1d90f3;
+                                            font-size: 13px;
+                                            website-ta := TouchArea {
+                                                clicked => { root.open-url("https://www.eyuel.com.et/omni-search"); }
+                                            }
+                                        }
+                                    }
+                                    
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "GitHub";
+                                            color: github-ta.has-hover ? #4daaf8 : #1d90f3;
+                                            font-size: 13px;
+                                            github-ta := TouchArea {
+                                                clicked => { root.open-url("https://github.com/Eul45"); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Phone Sync Page
+                    if root.current-page == 8: VerticalBox {
+                        alignment: start;
+                        spacing: 24px;
+                        Text { text: "Phone Sync & Transfer"; font-size: 30px; font-weight: 700; color: root.text-primary; }
+
+                        Rectangle {
+                            background: get-android-ta.has-hover ? #173c28 : #142f22;
+                            border-radius: 8px;
+                            border-color: #22c55e;
+                            border-width: 1px;
+                            height: 74px;
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 14px;
+
+                                Text {
+                                    text: "\u{e8ea}";
+                                    font-family: "Segoe MDL2 Assets";
+                                    font-size: 28px;
+                                    color: #4ade80;
+                                    vertical-alignment: center;
+                                    width: 34px;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 3px;
+                                    Text { text: "Get Android App"; font-size: 16px; font-weight: 700; color: #dcfce7; }
+                                    Text { text: "Install the phone companion for sync and transfers"; font-size: 12px; color: #86efac; }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                Text {
+                                    text: "\u{e8a7}";
+                                    font-family: "Segoe MDL2 Assets";
+                                    font-size: 16px;
+                                    color: #bbf7d0;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            get-android-ta := TouchArea {
+                                clicked => { root.open-url("https://www.eyuel.com.et/omni-search"); }
+                            }
+                        }
+
+                        // Card 1: Server Status & Control
+                        Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            height: 120px;
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 16px;
+
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 16px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 4px;
+                                        Text { text: "Sync Server Status"; font-size: 18px; font-weight: 600; color: root.text-primary; }
+                                        Text { text: root.sync-server-running ? "Running on " + root.sync-server-ip + ":9876 (" + root.sync-connected-clients + " connected)" : "Stopped (Click Start Server to connect phone)"; font-size: 13px; color: root.sync-server-running ? #4ade80 : root.text-muted; }
+                                    }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 12px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 8px;
+                                        Button {
+                                            width: 160px;
+                                            text: root.sync-server-running ? "Stop Server" : "Start Server";
+                                            primary: !root.sync-server-running;
+                                            clicked => {
+                                                if (root.sync-server-running) {
+                                                    root.stop-phone-sync-server();
+                                                } else {
+                                                    root.start-phone-sync-server();
+                                                }
+                                            }
+                                        }
+                                        Button {
+                                            width: 160px;
+                                            text: "Send Files to Phone";
+                                            enabled: root.sync-server-running;
+                                            clicked => { root.send-files-to-phone(); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Card 1.5: QR Code Pairing
+                        if root.sync-server-running && root.sync-connected-clients == 0 && root.has-sync-qr-image: Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            height: 200px;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
+                                Text { text: "Scan QR Code with Phone App"; font-size: 15px; font-weight: 600; color: root.text-primary; horizontal-alignment: center; }
+                                Image {
+                                    source: root.sync-qr-image;
+                                    width: 140px;
+                                    height: 140px;
+                                    image-fit: contain;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Card 2: Pending Approvals
+                        if root.has-pending-pairing: Rectangle {
+                            background: #3b2d18;
+                            border-radius: 8px;
+                            border-color: #f59e0b;
+                            border-width: 1px;
+                            height: 80px;
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 16px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: "Pairing Request from " + root.pending-device-name; font-size: 15px; font-weight: 600; color: #fbbf24; }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Button { text: "Approve"; primary: true; clicked => { root.approve-phone-pairing(); } }
+                                            Button { text: "Reject"; clicked => { root.reject-phone-pairing(); } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Card 3: Active Transfers Progress
+                        if root.transfer-count > 0: Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 12px;
+                                Text { text: "File Transfers"; font-size: 18px; font-weight: 600; color: root.text-primary; }
+
+                                // Transfer 1
+                                if root.transfer-count >= 1 && root.transfer-name-1 != "": VerticalLayout {
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        Text { text: root.transfer-name-1; font-size: 13px; color: root.text-primary; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: root.transfer-status-1 + " " + root.transfer-progress-1 + "%"; font-size: 12px; color: root.transfer-status-1 == "Completed" ? #4ade80 : root.transfer-status-1 == "Failed" ? #f87171 : #60a5fa; }
+                                    }
+                                    Rectangle {
+                                        height: 6px; border-radius: 3px; background: #2a2f38;
+                                        Rectangle {
+                                            x: 0px; y: 0px; height: 6px; border-radius: 3px;
+                                            width: parent.width * root.transfer-progress-1 / 100;
+                                            background: root.transfer-status-1 == "Completed" ? #4ade80 : root.transfer-status-1 == "Failed" ? #f87171 : #60a5fa;
+                                            animate width { duration: 200ms; }
+                                        }
+                                    }
+                                }
+                                // Transfer 2
+                                if root.transfer-count >= 2 && root.transfer-name-2 != "": VerticalLayout {
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        Text { text: root.transfer-name-2; font-size: 13px; color: root.text-primary; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: root.transfer-status-2 + " " + root.transfer-progress-2 + "%"; font-size: 12px; color: root.transfer-status-2 == "Completed" ? #4ade80 : root.transfer-status-2 == "Failed" ? #f87171 : #60a5fa; }
+                                    }
+                                    Rectangle {
+                                        height: 6px; border-radius: 3px; background: #2a2f38;
+                                        Rectangle {
+                                            x: 0px; y: 0px; height: 6px; border-radius: 3px;
+                                            width: parent.width * root.transfer-progress-2 / 100;
+                                            background: root.transfer-status-2 == "Completed" ? #4ade80 : root.transfer-status-2 == "Failed" ? #f87171 : #60a5fa;
+                                            animate width { duration: 200ms; }
+                                        }
+                                    }
+                                }
+                                // Transfer 3
+                                if root.transfer-count >= 3 && root.transfer-name-3 != "": VerticalLayout {
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        Text { text: root.transfer-name-3; font-size: 13px; color: root.text-primary; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: root.transfer-status-3 + " " + root.transfer-progress-3 + "%"; font-size: 12px; color: root.transfer-status-3 == "Completed" ? #4ade80 : root.transfer-status-3 == "Failed" ? #f87171 : #60a5fa; }
+                                    }
+                                    Rectangle {
+                                        height: 6px; border-radius: 3px; background: #2a2f38;
+                                        Rectangle {
+                                            x: 0px; y: 0px; height: 6px; border-radius: 3px;
+                                            width: parent.width * root.transfer-progress-3 / 100;
+                                            background: root.transfer-status-3 == "Completed" ? #4ade80 : root.transfer-status-3 == "Failed" ? #f87171 : #60a5fa;
+                                            animate width { duration: 200ms; }
+                                        }
+                                    }
+                                }
+                                // Transfer 4
+                                if root.transfer-count >= 4 && root.transfer-name-4 != "": VerticalLayout {
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        Text { text: root.transfer-name-4; font-size: 13px; color: root.text-primary; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: root.transfer-status-4 + " " + root.transfer-progress-4 + "%"; font-size: 12px; color: root.transfer-status-4 == "Completed" ? #4ade80 : root.transfer-status-4 == "Failed" ? #f87171 : #60a5fa; }
+                                    }
+                                    Rectangle {
+                                        height: 6px; border-radius: 3px; background: #2a2f38;
+                                        Rectangle {
+                                            x: 0px; y: 0px; height: 6px; border-radius: 3px;
+                                            width: parent.width * root.transfer-progress-4 / 100;
+                                            background: root.transfer-status-4 == "Completed" ? #4ade80 : root.transfer-status-4 == "Failed" ? #f87171 : #60a5fa;
+                                            animate width { duration: 200ms; }
+                                        }
+                                    }
+                                }
+                                // Transfer 5
+                                if root.transfer-count >= 5 && root.transfer-name-5 != "": VerticalLayout {
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        Text { text: root.transfer-name-5; font-size: 13px; color: root.text-primary; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: root.transfer-status-5 + " " + root.transfer-progress-5 + "%"; font-size: 12px; color: root.transfer-status-5 == "Completed" ? #4ade80 : root.transfer-status-5 == "Failed" ? #f87171 : #60a5fa; }
+                                    }
+                                    Rectangle {
+                                        height: 6px; border-radius: 3px; background: #2a2f38;
+                                        Rectangle {
+                                            x: 0px; y: 0px; height: 6px; border-radius: 3px;
+                                            width: parent.width * root.transfer-progress-5 / 100;
+                                            background: root.transfer-status-5 == "Completed" ? #4ade80 : root.transfer-status-5 == "Failed" ? #f87171 : #60a5fa;
+                                            animate width { duration: 200ms; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Card 4: Storage & Quick Folder
+                        Rectangle {
+                            background: root.card-bg;
+                            border-radius: 8px;
+                            border-color: root.border-color;
+                            border-width: 1px;
+                            height: 70px;
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 16px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text { text: "Received Phone Files Location"; font-size: 15px; font-weight: 600; color: root.text-primary; }
+                                    Text { text: "Downloads / OmniSearch / [Images, Videos, Documents...]"; font-size: 13px; color: root.text-muted; }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                HorizontalLayout {
+                                    alignment: end;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Button {
+                                            text: "Open Folder";
+                                            clicked => { root.open-sync-folder(); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+
+                }
+            }
+        }
+    }
+}
+
+}
