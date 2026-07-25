@@ -1,8 +1,8 @@
 [package]
 name = "omni-search"
-version = "0.1.15"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.1.16"
+description = "High-performance Windows desktop file search engine built with Tauri, Rust, and C++"
+authors = ["Eyuel Engida"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
