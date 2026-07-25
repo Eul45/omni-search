@@ -8,6 +8,8 @@ import type {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import { flushSync } from "react-dom";
 import "./App.css";
 import {
@@ -47,6 +49,32 @@ const TEXT_PREVIEW_MAX_CHARS = 3200;
 const CONTENT_SNIPPET_MAX_CHARS = 220;
 const CONTENT_SNIPPET_RESULT_LIMIT = 24;
 const TEXT_PREVIEW_COMMAND_TIMEOUT_MS = 2800;
+const UPDATE_SKIP_STORAGE_KEY = "omnisearch_skipped_update_version";
+const UPDATE_CHECK_DELAY_MS = 1600;
+
+type TauriUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
+
+type AppUpdateInfo = {
+  update: TauriUpdate;
+  version: string;
+  currentVersion: string;
+  date?: string;
+  body?: string;
+};
+
+type UpdateProgressState = {
+  stage: "idle" | "downloading" | "installing" | "relaunching" | "error";
+  downloaded: number;
+  total: number | null;
+  percent: number;
+  message: string;
+  error?: string;
+};
+
+type TauriDownloadEvent =
+  | { event: "Started"; data?: { contentLength?: number } }
+  | { event: "Progress"; data?: { chunkLength?: number } }
+  | { event: "Finished"; data?: unknown };
 
 type IndexStatus = {
   indexing: boolean;
@@ -270,6 +298,8 @@ type ThemePreset = {
 };
 
 const DEVELOPER_NAME = "Eyuel Engida";
+const GITHUB_PROFILE_URL = "https://github.com/Eul45";
+const GITHUB_SPONSOR_URL = "https://github.com/sponsors/Eul45";
 const DONATE_URL = "http://buymeacoffee.com/eyuelengida";
 const THEME_STORAGE_KEY = "omnisearch_theme_mode";
 const THEME_PRESET_STORAGE_KEY = "omnisearch_theme_preset";
@@ -1281,6 +1311,14 @@ function CalendarIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3.5" y="5.5" width="17" height="15" rx="2.5" />
       <path d="M7 3.75v3.5M17 3.75v3.5M3.5 9.5h17M8 13h3M13 13h3M8 17h3" />
+    </svg>
+  );
+}
+
+function GitHubSponsorIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
     </svg>
   );
 }
@@ -2578,6 +2616,105 @@ function clampQuickResultsPaneRatio(value: number, stageWidth: number): number {
   return Math.min(Math.max(normalized, minRatio), maxRatio);
 }
 
+function normalizeReleaseNotesMarkdown(notes: string): string {
+  return notes
+    .replace(/\r\n/g, "\n")
+    .replace(/\\([#&*_[\]()`>+\-.!])/g, "$1")
+    .trim();
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const segments: ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push(text.slice(lastIndex, match.index));
+    }
+
+    const token = match[0];
+    const key = `${match.index}-${token}`;
+    if (token.startsWith("`")) {
+      segments.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("**")) {
+      segments.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else {
+      segments.push(<em key={key}>{token.slice(1, -1)}</em>);
+    }
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < text.length) {
+    segments.push(text.slice(lastIndex));
+  }
+
+  return segments;
+}
+
+function renderUpdateReleaseNotes(notes: string): ReactNode[] {
+  const normalizedNotes = normalizeReleaseNotesMarkdown(notes);
+  if (!normalizedNotes) {
+    return [];
+  }
+
+  const nodes: ReactNode[] = [];
+  let listItems: string[] = [];
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+    const items = listItems;
+    listItems = [];
+    nodes.push(
+      <ul key={`list-${nodes.length}`} className="update-notes-list">
+        {items.map((item, index) => (
+          <li key={`${index}-${item}`}>{renderInlineMarkdown(item)}</li>
+        ))}
+      </ul>,
+    );
+  };
+
+  normalizedNotes.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line) {
+      flushList();
+      return;
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      flushList();
+      nodes.push(
+        <p
+          key={`heading-${nodes.length}`}
+          className={heading[1].length === 1 ? "update-notes-heading-main" : "update-notes-heading"}
+        >
+          {renderInlineMarkdown(heading[2])}
+        </p>,
+      );
+      return;
+    }
+
+    const bullet = /^[-*]\s+(.+)$/.exec(line) ?? /^\d+[.)]\s+(.+)$/.exec(line);
+    if (bullet) {
+      listItems.push(bullet[1]);
+      return;
+    }
+
+    flushList();
+    nodes.push(
+      <p key={`paragraph-${nodes.length}`} className="update-notes-paragraph">
+        {renderInlineMarkdown(line)}
+      </p>,
+    );
+  });
+
+  flushList();
+  return nodes;
+}
+
 function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window === "undefined") {
@@ -2796,6 +2933,14 @@ function App() {
   const [quickLookOpen, setQuickLookOpen] = useState(false);
   const [quickLookCopyState, setQuickLookCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [appVersion, setAppVersion] = useState<string>("");
+  const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgressState>({
+    stage: "idle",
+    downloaded: 0,
+    total: null,
+    percent: 0,
+    message: "",
+  });
   const previousIndexedCountRef = useRef<number | null>(null);
   const indexSyncTimeoutRef = useRef<number | null>(null);
   const duplicateNoticeTimeoutRef = useRef<number | null>(null);
@@ -3240,6 +3385,145 @@ function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void check()
+        .then((update) => {
+          if (!active || !update?.available) {
+            return;
+          }
+          const skippedVersion = window.localStorage.getItem(UPDATE_SKIP_STORAGE_KEY);
+          if (skippedVersion === update.version) {
+            return;
+          }
+          const updateMeta = update as TauriUpdate & {
+            currentVersion?: string;
+            date?: string;
+            body?: string;
+          };
+          setAvailableUpdate({
+            update,
+            version: update.version,
+            currentVersion: updateMeta.currentVersion ?? appVersion,
+            date: updateMeta.date,
+            body: updateMeta.body,
+          });
+          setUpdateProgress({
+            stage: "idle",
+            downloaded: 0,
+            total: null,
+            percent: 0,
+            message: "",
+          });
+        })
+        .catch((error) => {
+          console.error("Update check failed:", error);
+        });
+    }, UPDATE_CHECK_DELAY_MS);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [appVersion]);
+
+  function dismissUpdateForNow(): void {
+    if (updateProgress.stage !== "idle" && updateProgress.stage !== "error") {
+      return;
+    }
+    setAvailableUpdate(null);
+    setUpdateProgress({
+      stage: "idle",
+      downloaded: 0,
+      total: null,
+      percent: 0,
+      message: "",
+    });
+  }
+
+  function skipAvailableUpdate(): void {
+    if (!availableUpdate || (updateProgress.stage !== "idle" && updateProgress.stage !== "error")) {
+      return;
+    }
+    window.localStorage.setItem(UPDATE_SKIP_STORAGE_KEY, availableUpdate.version);
+    setAvailableUpdate(null);
+  }
+
+  async function installAvailableUpdate(): Promise<void> {
+    if (!availableUpdate || (updateProgress.stage !== "idle" && updateProgress.stage !== "error")) {
+      return;
+    }
+
+    let downloaded = 0;
+    let total: number | null = null;
+    setUpdateProgress({
+      stage: "downloading",
+      downloaded: 0,
+          total: null,
+          percent: 0,
+          message: "Preparing update...",
+    });
+
+    try {
+      await availableUpdate.update.downloadAndInstall((event: TauriDownloadEvent) => {
+        if (event.event === "Started") {
+          total = typeof event.data?.contentLength === "number" ? event.data.contentLength : null;
+          downloaded = 0;
+          setUpdateProgress({
+            stage: "downloading",
+            downloaded,
+            total,
+            percent: 0,
+            message: total ? "Downloading update..." : "Downloading update...",
+          });
+          return;
+        }
+
+        if (event.event === "Progress") {
+          downloaded += event.data?.chunkLength ?? 0;
+          const percent = total ? Math.min(100, Math.round((downloaded / total) * 100)) : 0;
+          setUpdateProgress({
+            stage: "downloading",
+            downloaded,
+            total,
+            percent,
+            message: "Downloading update...",
+          });
+          return;
+        }
+
+        if (event.event === "Finished") {
+          setUpdateProgress({
+            stage: "installing",
+            downloaded,
+            total,
+            percent: 100,
+            message: "Installing update...",
+          });
+        }
+      });
+
+      setUpdateProgress({
+        stage: "relaunching",
+        downloaded,
+        total,
+        percent: 100,
+        message: "Update installed. Relaunching OmniSearch...",
+      });
+      await relaunch();
+    } catch (error) {
+      setUpdateProgress({
+        stage: "error",
+        downloaded,
+        total,
+        percent: total ? Math.min(100, Math.round((downloaded / total) * 100)) : 0,
+        message: "Update failed.",
+        error: String(error),
+      });
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -7911,23 +8195,35 @@ function App() {
               <div className="about-sections">
                 <section className="about-support-card" aria-label="Support the developer">
                   <div className="about-support-copy">
-                    <span className="about-support-label">Donate</span>
-                    <strong>Buy me a coffee</strong>
+                    <span className="about-support-label">Support</span>
+                    <strong>Sponsor OmniSearch</strong>
                     <p>
                       If OmniSearch helps your workflow, you can support future updates and desktop
                       tools here.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className="about-support-button"
-                    onClick={() => {
-                      void openExternalLink(DONATE_URL);
-                    }}
-                  >
-                    <BuyMeCoffeeIcon />
-                    <span>Buy me a coffee</span>
-                  </button>
+                  <div className="about-support-actions">
+                    <button
+                      type="button"
+                      className="about-support-button is-sponsor"
+                      onClick={() => {
+                        void openExternalLink(GITHUB_SPONSOR_URL);
+                      }}
+                    >
+                      <GitHubSponsorIcon />
+                      <span>Sponsor on GitHub</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="about-support-button is-bmc"
+                      onClick={() => {
+                        void openExternalLink(DONATE_URL);
+                      }}
+                    >
+                      <BuyMeCoffeeIcon />
+                      <span>Buy me a coffee</span>
+                    </button>
+                  </div>
                 </section>
 
                 <section
@@ -8664,6 +8960,97 @@ function App() {
                     </div>
                   </div>
                 </aside>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {availableUpdate ? (
+          <div className="modal-overlay update-modal-overlay" role="dialog" aria-modal="true">
+            <div className="modal-card update-modal-card">
+              <div className="update-modal-header">
+                <div className="update-modal-title">
+                  <h3>Update Available</h3>
+                </div>
+                <button
+                  type="button"
+                  className="update-github-link"
+                  aria-label="Open OmniSearch GitHub"
+                  title="Open GitHub"
+                  onClick={() => {
+                    void openExternalLink(GITHUB_PROFILE_URL);
+                  }}
+                >
+                  <SocialIcon icon="github" />
+                </button>
+              </div>
+
+              <div className="update-version-row">
+                <span className="update-current-version">
+                  v{(availableUpdate.currentVersion || appVersion || "current").replace(/^v/i, "")}
+                </span>
+                <strong aria-hidden="true">-&gt;</strong>
+                <span className="update-next-version">v{availableUpdate.version.replace(/^v/i, "")}</span>
+              </div>
+
+              {availableUpdate.body ? (
+                <div className="update-notes">
+                  <span>Release Notes</span>
+                  <div className="update-notes-content">
+                    {renderUpdateReleaseNotes(availableUpdate.body)}
+                  </div>
+                </div>
+              ) : null}
+
+              {updateProgress.stage !== "idle" || updateProgress.error ? (
+                <div className={`update-progress ${updateProgress.stage === "error" ? "is-error" : ""}`}>
+                  <div className="update-progress-top">
+                    <span>{updateProgress.message || "Working on update..."}</span>
+                    {updateProgress.stage === "downloading" && updateProgress.total ? (
+                      <strong>{updateProgress.percent}%</strong>
+                    ) : null}
+                  </div>
+                  <div className="update-progress-track" aria-hidden="true">
+                    <div
+                      className="update-progress-fill"
+                      style={{
+                        width: `${updateProgress.percent}%`,
+                      }}
+                    />
+                  </div>
+                  {updateProgress.error ? <p>{updateProgress.error}</p> : null}
+                </div>
+              ) : null}
+
+              <div className="update-modal-actions">
+                <button
+                  type="button"
+                  className="update-skip-button"
+                  disabled={updateProgress.stage !== "idle" && updateProgress.stage !== "error"}
+                  onClick={skipAvailableUpdate}
+                >
+                  Skip this version
+                </button>
+                <div className="update-modal-action-group">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={updateProgress.stage !== "idle" && updateProgress.stage !== "error"}
+                    onClick={dismissUpdateForNow}
+                  >
+                    Later
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button update-now-button"
+                    disabled={updateProgress.stage !== "idle" && updateProgress.stage !== "error"}
+                    onClick={() => {
+                      void installAvailableUpdate();
+                    }}
+                  >
+                    {updateProgress.stage === "error" ? "Try Again" : "Update Now"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

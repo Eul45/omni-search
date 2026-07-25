@@ -1443,6 +1443,8 @@ pub fn run() {
             handle_shell_send_to_phone(app, &argv);
         }));
         builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+        builder = builder.plugin(tauri_plugin_process::init());
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
         builder = builder.plugin(desktop::window_state_plugin());
     }
 

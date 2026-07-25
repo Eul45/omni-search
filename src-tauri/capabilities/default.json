@@ -7,6 +7,8 @@
     "core:default",
     "opener:default",
     "opener:allow-open-path",
+    "process:default",
+    "updater:default",
     "window-state:default"
   ]
 }

@@ -46,6 +46,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -61,6 +63,9 @@ jobs:
 
       - name: Build installer
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if ("${{ matrix.name }}" -eq "x64-lite") {
             cargo build --manifest-path omnisearch-lite/Cargo.toml --release
@@ -103,6 +108,23 @@ jobs:
           output-artifact-directory: "${{ github.workspace }}\\signed-artifacts"
           skip-decompress: true
 
+      - name: Sign updater package
+        if: matrix.bundle_type == 'nsis'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $installer = Get-ChildItem -Path "signed-artifacts/${{ matrix.file_ext }}" | Select-Object -First 1
+          if (-not $installer) {
+            throw "Signed NSIS installer not found."
+          }
+          $signature = npx tauri signer sign "$($installer.FullName)"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tauri updater signature failed."
+          }
+          Set-Content -Path "$($installer.FullName).sig" -Value $signature.Trim() -Encoding utf8
+
       - name: Get version from tauri.conf.json
         id: get-version
         shell: pwsh
@@ -115,6 +137,16 @@ jobs:
         with:
           tag_name: v${{ steps.get-version.outputs.version }}
           files: signed-artifacts/${{ matrix.file_ext }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload updater signature to GitHub Release
+        if: matrix.bundle_type == 'nsis'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get-version.outputs.version }}
+          files: signed-artifacts/${{ matrix.file_ext }}.sig
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -135,3 +167,101 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Signed artifact download: ${{ steps.signpath.outputs.signed-artifact-download-url }}"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Note: release-signing requests require manual approval in the SignPath UI before the workflow can finish."
 
+  publish-updater-manifest:
+    name: Publish Updater Manifest
+    runs-on: ubuntu-latest
+    needs: sign-production-installer
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download signed NSIS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: signed-*-nsis
+          path: signed-release-assets
+
+      - name: Get version from tauri.conf.json
+        id: get-version
+        shell: bash
+        run: |
+          VERSION="$(python -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes
+        shell: bash
+        run: |
+          if [ -s RELEASE_NOTES.md ]; then
+            cp RELEASE_NOTES.md release-notes.md
+          else
+            {
+              echo "Changes in this OmniSearch update:"
+              echo
+              git log -20 --pretty=format:"- %s" || echo "- OmniSearch update."
+            } > release-notes.md
+          fi
+
+      - name: Generate updater manifest from signed installers
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ steps.get-version.outputs.version }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          assets_dir = Path("signed-release-assets")
+          repo = os.environ["REPOSITORY"]
+          version = os.environ["VERSION"]
+          notes = Path("release-notes.md").read_text(encoding="utf-8").strip()
+          platforms = {}
+
+          for sig_path in sorted(assets_dir.rglob("*.exe.sig")):
+              installer = Path(str(sig_path)[:-4])
+              if not installer.exists():
+                  continue
+              context = " ".join(part.lower() for part in sig_path.parts)
+              if "arm64" in context or "aarch64" in context:
+                  platform = "windows-aarch64"
+              elif "x64" in context or "x86_64" in context:
+                  platform = "windows-x86_64"
+              else:
+                  continue
+              platforms[platform] = {
+                  "signature": sig_path.read_text(encoding="utf-8").strip(),
+                  "url": f"https://github.com/{repo}/releases/latest/download/{installer.name}",
+              }
+
+          missing = [platform for platform in ("windows-x86_64", "windows-aarch64") if platform not in platforms]
+          if missing:
+              raise SystemExit(f"Missing signed updater artifact(s): {', '.join(missing)}")
+
+          manifest = {
+              "version": version,
+              "notes": notes,
+              "pub_date": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "platforms": platforms,
+          }
+
+          Path("latest.json").write_text(
+              json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload latest.json to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get-version.outputs.version }}
+          files: latest.json
+          body_path: release-notes.md
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

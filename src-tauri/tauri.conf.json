@@ -71,6 +71,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -91,6 +92,17 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installerHooks": "./windows/nsis-hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY0RjhCNDE4OUI4Q0M2ODQKUldTRXhveWJHTFQ0WktmQ0ovaUgvQ1E1bUJaQ1ZkRjFjYmErMkVTT2c3UXZmeVJlcWZZemtjeTUK",
+      "endpoints": [
+        "https://github.com/Eul45/omni-search/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }
