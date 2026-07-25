@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -159,37 +159,3 @@ jobs:
           name: omnisearch-android-preview-apk
           path: release-assets/OmniSearch-Android.apk
           if-no-files-found: error
-
-  create-draft-release:
-    name: Create Draft Release
-    runs-on: ubuntu-latest
-    needs:
-      - build
-      - build-android
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Get app version
-        id: version
-        shell: bash
-        run: |
-          VERSION="$(python -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Create draft release with all artifacts
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: OmniSearch v${{ steps.version.outputs.version }}
-          draft: true
-          prerelease: false
-          files: release-assets/*
-          fail_on_unmatched_files: false

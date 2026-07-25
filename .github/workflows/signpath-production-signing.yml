@@ -136,6 +136,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.get-version.outputs.version }}
+          draft: true
+          prerelease: false
           files: signed-artifacts/${{ matrix.file_ext }}
           fail_on_unmatched_files: true
         env:
@@ -146,6 +148,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.get-version.outputs.version }}
+          draft: true
+          prerelease: false
           files: signed-artifacts/${{ matrix.file_ext }}.sig
           fail_on_unmatched_files: true
         env:
@@ -179,10 +183,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download signed NSIS artifacts
+      - name: Download signed release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: signed-*-nsis
+          pattern: signed-*
           path: signed-release-assets
 
       - name: Get version from tauri.conf.json
@@ -286,6 +290,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.get-version.outputs.version }}
+          draft: true
+          prerelease: false
           files: latest.json
           body_path: release-notes.md
           fail_on_unmatched_files: true
