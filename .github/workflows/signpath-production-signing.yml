@@ -109,7 +109,7 @@ jobs:
           skip-decompress: true
 
       - name: Sign updater package
-        if: matrix.bundle_type == 'nsis'
+        if: matrix.bundle_type == 'nsis' || matrix.bundle_type == 'msi'
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -117,7 +117,7 @@ jobs:
         run: |
           $installer = Get-ChildItem -Path "signed-artifacts/${{ matrix.file_ext }}" | Select-Object -First 1
           if (-not $installer) {
-            throw "Signed NSIS installer not found."
+            throw "Signed installer not found."
           }
           $signature = npx tauri signer sign "$($installer.FullName)"
           if ($LASTEXITCODE -ne 0) {
@@ -142,7 +142,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload updater signature to GitHub Release
-        if: matrix.bundle_type == 'nsis'
+        if: matrix.bundle_type == 'nsis' || matrix.bundle_type == 'msi'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.get-version.outputs.version }}
@@ -229,9 +229,9 @@ jobs:
                   continue
               context = " ".join(part.lower() for part in sig_path.parts)
               if "arm64" in context or "aarch64" in context:
-                  platform = "windows-aarch64"
+                  platform = "windows-aarch64-nsis"
               elif "x64" in context or "x86_64" in context:
-                  platform = "windows-x86_64"
+                  platform = "windows-x86_64-nsis"
               else:
                   continue
               platforms[platform] = {
@@ -239,9 +239,35 @@ jobs:
                   "url": f"https://github.com/{repo}/releases/latest/download/{installer.name}",
               }
 
-          missing = [platform for platform in ("windows-x86_64", "windows-aarch64") if platform not in platforms]
+          for sig_path in sorted(assets_dir.rglob("*.msi.sig")):
+              installer = Path(str(sig_path)[:-4])
+              if not installer.exists():
+                  continue
+              context = " ".join(part.lower() for part in sig_path.parts)
+              if "arm64" in context or "aarch64" in context:
+                  platform = "windows-aarch64-msi"
+              elif "x64" in context or "x86_64" in context:
+                  platform = "windows-x86_64-msi"
+              else:
+                  continue
+              platforms[platform] = {
+                  "signature": sig_path.read_text(encoding="utf-8").strip(),
+                  "url": f"https://github.com/{repo}/releases/latest/download/{installer.name}",
+              }
+
+          missing = [
+              platform
+              for platform in ("windows-x86_64-nsis", "windows-aarch64-nsis", "windows-x86_64-msi")
+              if platform not in platforms
+          ]
           if missing:
               raise SystemExit(f"Missing signed updater artifact(s): {', '.join(missing)}")
+
+          # Compatibility for older updater-enabled builds that did not pass a
+          # custom bundle target yet. Keep these pointed at NSIS, which was the
+          # original auto-update path before MSI-specific routing was added.
+          platforms["windows-x86_64"] = platforms["windows-x86_64-nsis"]
+          platforms["windows-aarch64"] = platforms["windows-aarch64-nsis"]
 
           manifest = {
               "version": version,

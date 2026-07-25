@@ -6,7 +6,7 @@ import type {
   ReactNode,
 } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
+import { BundleType, getBundleType, getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
@@ -2715,6 +2715,19 @@ function renderUpdateReleaseNotes(notes: string): ReactNode[] {
   return nodes;
 }
 
+async function resolveUpdaterTarget(): Promise<string | undefined> {
+  try {
+    const bundleType = await getBundleType();
+    if (bundleType !== BundleType.Nsis && bundleType !== BundleType.Msi) {
+      return undefined;
+    }
+    const arch = await invoke<string>("current_arch");
+    return `windows-${arch}-${bundleType}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window === "undefined") {
@@ -3389,7 +3402,8 @@ function App() {
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => {
-      void check()
+      void resolveUpdaterTarget()
+        .then((target) => check(target ? { target } : undefined))
         .then((update) => {
           if (!active || !update?.available) {
             return;

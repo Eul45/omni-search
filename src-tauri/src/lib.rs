@@ -298,6 +298,35 @@ fn index_status() -> IndexStatus {
 }
 
 #[tauri::command]
+fn current_arch() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64"
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64"
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        "i686"
+    }
+    #[cfg(target_arch = "arm")]
+    {
+        "armv7"
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "x86",
+        target_arch = "arm"
+    )))]
+    {
+        std::env::consts::ARCH
+    }
+}
+
+#[tauri::command]
 async fn search_files(
     query: String,
     extension: Option<String>,
@@ -1453,6 +1482,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_indexing,
             index_status,
+            current_arch,
             search_files,
             cancel_search,
             find_duplicate_groups,
