@@ -37,11 +37,13 @@ android {
   signingConfigs {
     create("release") {
       if (hasAndroidSigningKey) {
+        logger.lifecycle("✅ PRODUCTION SIGNING: Signed using '$androidKeystorePath' (Alias: '$androidKeyAlias').")
         storeFile = file(androidKeystorePath)
         storePassword = androidStorePassword
         keyAlias = androidKeyAlias
         keyPassword = androidKeyPassword
       } else {
+        logger.lifecycle("⚠️ BUILD NOTICE: Production key not found, using DEBUG keystore.")
         storeFile = file("${rootDir}/debug.keystore")
         storePassword = "android"
         keyAlias = "androiddebugkey"
