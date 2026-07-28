@@ -311,6 +311,7 @@ pub struct SyncState {
     pending_explorer_open: Arc<Mutex<bool>>,
     pub tls_config: Arc<Mutex<Option<Arc<rustls::ServerConfig>>>>,
     pub cert_fingerprint: Arc<Mutex<String>>,
+    pub active_port: Arc<Mutex<u16>>,
 }
 
 impl SyncState {
@@ -330,6 +331,7 @@ impl SyncState {
             pending_explorer_open: Arc::new(Mutex::new(false)),
             tls_config: Arc::new(Mutex::new(None)),
             cert_fingerprint: Arc::new(Mutex::new(String::new())),
+            active_port: Arc::new(Mutex::new(SYNC_PORT)),
         }
     }
 }
@@ -341,13 +343,13 @@ fn generate_pairing_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-pub fn build_pairing_uri(address: &str, token: &str, cert: &str) -> String {
+pub fn build_pairing_uri(address: &str, port: u16, token: &str, cert: &str) -> String {
     if address.trim().is_empty() || token.trim().is_empty() {
         String::new()
     } else if cert.trim().is_empty() {
-        format!("omnisearch://{}:{SYNC_PORT}?token={token}", address.trim())
+        format!("omnisearch://{}:{port}?token={token}", address.trim())
     } else {
-        format!("omnisearch://{}:{SYNC_PORT}?token={token}&cert={cert}", address.trim())
+        format!("omnisearch://{}:{port}?token={token}&cert={cert}", address.trim())
     }
 }
 
@@ -2014,16 +2016,37 @@ pub fn start_sync_server(sync_state: Arc<SyncState>) {
             }
         }
 
-        let bind_addr = format!("0.0.0.0:{SYNC_PORT}");
-        let listener = match TcpListener::bind(&bind_addr) {
-            Ok(listener) => listener,
-            Err(error) => {
-                eprintln!("[OmniSearch Sync] Failed to bind {bind_addr}: {error}");
+        let mut bound_listener = None;
+        let mut bound_port = SYNC_PORT;
+
+        for candidate_offset in 0..20 {
+            let candidate_port = SYNC_PORT + candidate_offset;
+            let bind_addr = format!("0.0.0.0:{candidate_port}");
+            match TcpListener::bind(&bind_addr) {
+                Ok(listener) => {
+                    bound_listener = Some(listener);
+                    bound_port = candidate_port;
+                    break;
+                }
+                Err(error) => {
+                    eprintln!("[OmniSearch Sync] Port {candidate_port} busy ({error}), trying next port...");
+                }
+            }
+        }
+
+        let listener = match bound_listener {
+            Some(listener) => listener,
+            None => {
+                eprintln!("[OmniSearch Sync] Failed to bind any port in range {SYNC_PORT}..{}", SYNC_PORT + 20);
                 let mut running = server_running.lock().unwrap_or_else(|e| e.into_inner());
                 *running = false;
                 return;
             }
         };
+
+        if let Ok(mut p) = sync_state.active_port.lock() {
+            *p = bound_port;
+        }
 
         if let Err(error) = listener.set_nonblocking(true) {
             eprintln!("[OmniSearch Sync] Failed to make listener non-blocking: {error}");
@@ -2037,7 +2060,7 @@ pub fn start_sync_server(sync_state: Arc<SyncState>) {
             *running = true;
         }
 
-        eprintln!("[OmniSearch Sync] Server listening on {local_ip}:{SYNC_PORT}");
+        eprintln!("[OmniSearch Sync] Server listening on {local_ip}:{bound_port}");
 
         while !stop_requested.load(Ordering::SeqCst) {
             match listener.accept() {

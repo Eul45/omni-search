@@ -1260,7 +1260,10 @@ fn get_mobile_sync_server_info(
             address = current_ip;
         }
     }
-    let port = 9876;
+    let port = *sync_state
+        .active_port
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let token = sync_state
         .pairing_token
         .lock()
@@ -1271,7 +1274,7 @@ fn get_mobile_sync_server_info(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let pairing_uri = sync_server::build_pairing_uri(&address, &token, &fingerprint);
+    let pairing_uri = sync_server::build_pairing_uri(&address, port, &token, &fingerprint);
     let qr_svg = sync_server::generate_qr_svg(&pairing_uri);
     let connected_clients = *sync_state
         .client_count

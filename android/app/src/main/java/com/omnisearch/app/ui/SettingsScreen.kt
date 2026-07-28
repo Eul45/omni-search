@@ -27,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -493,21 +494,96 @@ fun SettingsScreen(
                     SocialButton(label = "Telegram", icon = Icons.Default.Send, url = "https://t.me/Eul_zzz", context = context)
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // Support Coffee button
+                // OmniSearch GitHub Page link
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(FluentTheme.dims.controlRadius))
+                        .background(FluentTheme.colors.surfaceBg)
+                        .border(1.dp, FluentTheme.colors.panelBorder, RoundedCornerShape(FluentTheme.dims.controlRadius))
+                        .clickable {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Eul45/omni-search"))
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Code, contentDescription = "OmniSearch GitHub Page", tint = FluentTheme.colors.accent, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "OmniSearch GitHub Page",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = FluentTheme.colors.textColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = FluentTheme.colors.textMuted, modifier = Modifier.size(18.dp))
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Primary Main Button: GitHub Sponsor (Sponsor Pink Theme)
                 Button(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/sponsors/Eul45"))
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEA4AAA)),
+                    shape = RoundedCornerShape(FluentTheme.dims.controlRadius)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.FavoriteBorder,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "GitHub Sponsor",
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Secondary Small Button: Buy me a coffee
+                OutlinedButton(
                     onClick = {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse("http://buymeacoffee.com/eyuelengida"))
                         context.startActivity(intent)
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFDD00)),
-                    shape = RoundedCornerShape(FluentTheme.dims.controlRadius)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp),
+                    shape = RoundedCornerShape(FluentTheme.dims.controlRadius),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFDD00).copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = FluentTheme.colors.surfaceBg,
+                        contentColor = Color(0xFFFFDD00)
+                    )
                 ) {
-                    Icon(Icons.Default.Coffee, contentDescription = null, tint = Color.Black)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Buy me a coffee", color = Color.Black, fontWeight = FontWeight.Bold)
+                    Icon(
+                        imageVector = Icons.Default.Coffee,
+                        contentDescription = null,
+                        tint = Color(0xFFFFDD00),
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Buy me a coffee",
+                        color = Color(0xFFFFDD00),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }

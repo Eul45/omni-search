@@ -279,6 +279,7 @@ pub struct SyncState {
     pending_explorer_open: Arc<Mutex<bool>>,
     pub tls_config: Arc<Mutex<Option<Arc<rustls::ServerConfig>>>>,
     pub cert_fingerprint: Arc<Mutex<String>>,
+    pub active_port: Arc<Mutex<u16>>,
 }
 
 impl SyncState {
@@ -298,6 +299,7 @@ impl SyncState {
             pending_explorer_open: Arc::new(Mutex::new(false)),
             tls_config: Arc::new(Mutex::new(None)),
             cert_fingerprint: Arc::new(Mutex::new(String::new())),
+            active_port: Arc::new(Mutex::new(SYNC_PORT)),
         }
     }
 }
@@ -312,14 +314,14 @@ fn generate_pairing_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-pub fn build_pairing_uri(address: &str, token: &str, cert: &str) -> String {
+pub fn build_pairing_uri(address: &str, port: u16, token: &str, cert: &str) -> String {
     if address.trim().is_empty() || token.trim().is_empty() {
         String::new()
     } else if cert.trim().is_empty() {
-        format!("omnisearch://{}:{SYNC_PORT}?token={token}", address.trim())
+        format!("omnisearch://{}:{port}?token={token}", address.trim())
     } else {
         format!(
-            "omnisearch://{}:{SYNC_PORT}?token={token}&cert={cert}",
+            "omnisearch://{}:{port}?token={token}&cert={cert}",
             address.trim()
         )
     }
@@ -1198,15 +1200,35 @@ pub fn start_sync_server(sync_state: Arc<SyncState>) {
             }
 
 
-            log_sync(&format!("Starting sync server thread on port {}", SYNC_PORT));
-            let bind_addr = format!("0.0.0.0:{SYNC_PORT}");
-            let listener = match TcpListener::bind(&bind_addr) {
-                Ok(l) => l,
-                Err(e) => {
-                    log_sync(&format!("Failed to bind port {SYNC_PORT}: {e}"));
+            let mut bound_listener = None;
+            let mut bound_port = SYNC_PORT;
+
+            for candidate_offset in 0..20 {
+                let candidate_port = SYNC_PORT + candidate_offset;
+                let bind_addr = format!("0.0.0.0:{candidate_port}");
+                match TcpListener::bind(&bind_addr) {
+                    Ok(l) => {
+                        bound_listener = Some(l);
+                        bound_port = candidate_port;
+                        break;
+                    }
+                    Err(e) => {
+                        log_sync(&format!("Port {candidate_port} busy ({e}), trying next..."));
+                    }
+                }
+            }
+
+            let listener = match bound_listener {
+                Some(l) => l,
+                None => {
+                    log_sync(&format!("Failed to bind any port in range {SYNC_PORT}..{}", SYNC_PORT + 20));
                     return;
                 }
             };
+
+            if let Ok(mut p) = sync_state.active_port.lock() {
+                *p = bound_port;
+            }
 
             listener
                 .set_nonblocking(true)
@@ -1217,7 +1239,7 @@ pub fn start_sync_server(sync_state: Arc<SyncState>) {
                 *running = true;
             }
 
-            log_sync(&format!("Server started successfully at wss://{local_ip}:{SYNC_PORT}"));
+            log_sync(&format!("Server started successfully at wss://{local_ip}:{bound_port}"));
 
             while !stop_requested.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -1291,6 +1313,10 @@ pub fn get_sync_server_info(sync_state: Arc<SyncState>) -> SyncServerInfo {
     if address.is_empty() {
         address = get_local_ip();
     }
+    let port = *sync_state
+        .active_port
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let token = sync_state
         .pairing_token
         .lock()
@@ -1301,7 +1327,7 @@ pub fn get_sync_server_info(sync_state: Arc<SyncState>) -> SyncServerInfo {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let pairing_uri = build_pairing_uri(&address, &token, &fingerprint);
+    let pairing_uri = build_pairing_uri(&address, port, &token, &fingerprint);
     let qr_svg = generate_qr_svg(&pairing_uri);
     let connected_clients = *sync_state
         .client_count
@@ -1320,7 +1346,7 @@ pub fn get_sync_server_info(sync_state: Arc<SyncState>) -> SyncServerInfo {
     SyncServerInfo {
         running,
         address,
-        port: SYNC_PORT,
+        port,
         qr_svg,
         connected_clients,
         pairing_uri,

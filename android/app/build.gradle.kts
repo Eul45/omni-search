@@ -36,10 +36,17 @@ android {
 
   signingConfigs {
     create("release") {
-      storeFile = file(androidKeystorePath)
-      storePassword = androidStorePassword
-      keyAlias = androidKeyAlias
-      keyPassword = androidKeyPassword
+      if (hasAndroidSigningKey) {
+        storeFile = file(androidKeystorePath)
+        storePassword = androidStorePassword
+        keyAlias = androidKeyAlias
+        keyPassword = androidKeyPassword
+      } else {
+        storeFile = file("${rootDir}/debug.keystore")
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+      }
     }
   }
 

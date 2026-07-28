@@ -359,20 +359,20 @@ jobs:
           mkdir -p android/app/signing
           printf '%s' "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/signing/omnisearch-upload.jks
 
-      - name: Build preview APK
+      - name: Build release APK
         working-directory: android
         env:
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/signing/omnisearch-upload.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assemblePreview --stacktrace
+        run: ./gradlew assembleRelease --stacktrace
 
       - name: Rename APK
         shell: bash
         run: |
           mkdir -p release-assets
-          cp android/app/build/outputs/apk/preview/app-preview.apk release-assets/OmniSearch-Android.apk
+          cp android/app/build/outputs/apk/release/app-release.apk release-assets/OmniSearch-Android.apk
 
       - name: Get version from tauri.conf.json
         id: get-version

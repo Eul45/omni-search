@@ -801,8 +801,9 @@ pub fn run_settings_window() {
             let sync_token = sync_state_status.pairing_token.lock().unwrap_or_else(|e| e.into_inner()).clone();
             let sync_fingerprint = sync_state_status.cert_fingerprint.lock().unwrap_or_else(|e| e.into_inner()).clone();
             
+            let sync_port = *sync_state_status.active_port.lock().unwrap_or_else(|e| e.into_inner());
             let pairing_uri = if sync_running {
-                crate::sync_server::build_pairing_uri(&sync_ip, &sync_token, &sync_fingerprint)
+                crate::sync_server::build_pairing_uri(&sync_ip, sync_port, &sync_token, &sync_fingerprint)
             } else {
                 String::new()
             };
